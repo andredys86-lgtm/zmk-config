@@ -72,3 +72,47 @@
         triggers-per-rotation = <20>;
     };
 };
+/ {
+    chosen {
+        zephyr,display = &oled;
+    };
+};
+
+&pinctrl {
+    oled_i2c_default: oled_i2c_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 0, 31)>, <NRF_PSEL(TWIM_SCL, 0, 29)>;
+        };
+    };
+
+    oled_i2c_sleep: oled_i2c_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 0, 31)>, <NRF_PSEL(TWIM_SCL, 0, 29)>;
+            low-power-enable;
+        };
+    };
+};
+
+&i2c0 {
+    status = "okay";
+    compatible = "nordic,nrf-twim";
+    pinctrl-0 = <&oled_i2c_default>;
+    pinctrl-1 = <&oled_i2c_sleep>;
+    pinctrl-names = "default", "sleep";
+    clock-frequency = <400000>;
+
+    oled: ssd1306@3c {
+        compatible = "solomon,ssd1306fb";
+        reg = <0x3c>;
+        width = <128>;
+        height = <64>;
+        segment-offset = <2>;
+        page-offset = <0>;
+        display-offset = <0>;
+        multiplex-ratio = <63>;
+        segment-remap;
+        com-invdir;
+        prechargep = <0x22>;
+        sh1106-compatible;
+    };
+};

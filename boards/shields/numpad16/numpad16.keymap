@@ -12,6 +12,8 @@
                 &kp KP_N1  &kp KP_N2   &kp KP_N3     &kp KP_MINUS
                 &kp KP_N0  &kp KP_DOT  &kp KP_ENTER  &kp KP_PLUS
             >;
+
+            sensor-bindings = <&inc_dec_kp C_VOL_UP C_VOL_DN>;
         };
     };
 };

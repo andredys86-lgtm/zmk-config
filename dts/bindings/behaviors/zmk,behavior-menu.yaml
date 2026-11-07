@@ -1,0 +1,5 @@
+description: Programming menu control behavior
+
+compatible: "zmk,behavior-menu"
+
+include: one_param.yaml

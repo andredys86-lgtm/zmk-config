@@ -17,10 +17,56 @@
             display-name = "Calc";
         };
 
-        layer_enc: layer_enc {
+        dyn: dyn {
+            compatible = "zmk,behavior-dyn";
+            #binding-cells = <1>;
+            display-name = "Dyn";
+        };
+
+        menu: menu {
+            compatible = "zmk,behavior-menu";
+            #binding-cells = <1>;
+            display-name = "Menu";
+        };
+
+        ht_menu: ht_menu {
+            compatible = "zmk,behavior-hold-tap";
+            #binding-cells = <2>;
+            flavor = "tap-preferred";
+            tapping-term-ms = <600>;
+            bindings = <&to>, <&dyn>;
+        };
+
+        ht_exit: ht_exit {
+            compatible = "zmk,behavior-hold-tap";
+            #binding-cells = <2>;
+            flavor = "tap-preferred";
+            tapping-term-ms = <600>;
+            bindings = <&to>, <&menu>;
+        };
+
+        enc_l0: enc_l0 {
             compatible = "zmk,behavior-sensor-rotate";
             #sensor-binding-cells = <0>;
             bindings = <&to 1>, <&to 0>;
+        };
+
+        enc_l1: enc_l1 {
+            compatible = "zmk,behavior-sensor-rotate";
+            #sensor-binding-cells = <0>;
+            bindings = <&to 2>, <&to 0>;
+        };
+
+        enc_l2: enc_l2 {
+            compatible = "zmk,behavior-sensor-rotate";
+            #sensor-binding-cells = <0>;
+            bindings = <&to 2>, <&to 1>;
+        };
+
+        enc_menu: enc_menu {
+            compatible = "zmk,behavior-sensor-rotate";
+            #sensor-binding-cells = <0>;
+            bindings = <&menu 17>, <&menu 18>;
         };
     };
 
@@ -36,7 +82,7 @@
                 &kp N3
             >;
 
-            sensor-bindings = <&layer_enc>;
+            sensor-bindings = <&enc_l0>;
         };
 
         calc_layer {
@@ -48,7 +94,31 @@
                 &calc CALC_CLR
             >;
 
-            sensor-bindings = <&layer_enc>;
+            sensor-bindings = <&enc_l1>;
+        };
+
+        prog_layer {
+            bindings = <
+                &dyn 0   &dyn 1   &dyn 2   &dyn 3
+                &dyn 4   &dyn 5   &dyn 6   &dyn 7
+                &dyn 8   &dyn 9   &dyn 10  &dyn 11
+                &dyn 12  &dyn 13  &dyn 14  &dyn 15
+                &ht_menu 3 16
+            >;
+
+            sensor-bindings = <&enc_l2>;
+        };
+
+        menu_layer {
+            bindings = <
+                &menu 0   &menu 1   &menu 2   &menu 3
+                &menu 4   &menu 5   &menu 6   &menu 7
+                &menu 8   &menu 9   &menu 10  &menu 11
+                &menu 12  &menu 13  &menu 14  &menu 15
+                &ht_exit 2 16
+            >;
+
+            sensor-bindings = <&enc_menu>;
         };
     };
 };

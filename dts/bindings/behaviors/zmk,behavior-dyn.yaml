@@ -1,0 +1,5 @@
+description: Programmable key behavior (code taken from the user table)
+
+compatible: "zmk,behavior-dyn"
+
+include: one_param.yaml

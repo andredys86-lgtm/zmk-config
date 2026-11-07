@@ -100,6 +100,7 @@
     pinctrl-1 = <&oled_i2c_sleep>;
     pinctrl-names = "default", "sleep";
     clock-frequency = <400000>;
+    zephyr,concat-buf-size = <256>;
 
     oled: ssd1306@3c {
         compatible = "sinowealth,sh1106";

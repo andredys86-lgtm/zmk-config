@@ -1,0 +1,6 @@
+if(CONFIG_ZMK_DISPLAY_STATUS_SCREEN_CUSTOM)
+  zephyr_library_named(numpad16_screen)
+  target_sources(numpad16_screen PRIVATE src/custom_status_screen.c)
+  zephyr_library_include_directories(${ZEPHYR_BASE}/lib/gui/lvgl/)
+  zephyr_library_include_directories(${CMAKE_SOURCE_DIR}/include)
+endif()

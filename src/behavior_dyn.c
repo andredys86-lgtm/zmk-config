@@ -3,14 +3,10 @@
 #include <zephyr/device.h>
 #include <drivers/behavior.h>
 #include <zephyr/logging/log.h>
-#include <zmk/event_manager.h>
-#include <zmk/events/keycode_state_changed.h>
 #include <zmk/behavior.h>
 #include "prog.h"
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
-
-static uint32_t pressed_code[PROG_KEYS];
 
 static int on_dyn_pressed(struct zmk_behavior_binding *binding,
                           struct zmk_behavior_binding_event event) {
@@ -18,26 +14,13 @@ static int on_dyn_pressed(struct zmk_behavior_binding *binding,
     if (idx >= PROG_KEYS) {
         return 0;
     }
-    uint32_t code = prog_get_code(idx);
-    if (code == 0) {
-        return 0;
-    }
-    pressed_code[idx] = code;
-    return raise_zmk_keycode_state_changed_from_encoded(code, true, event.timestamp);
+    prog_play(idx);
+    return 0;
 }
 
 static int on_dyn_released(struct zmk_behavior_binding *binding,
                            struct zmk_behavior_binding_event event) {
-    uint32_t idx = binding->param1;
-    if (idx >= PROG_KEYS) {
-        return 0;
-    }
-    uint32_t code = pressed_code[idx];
-    if (code == 0) {
-        return 0;
-    }
-    pressed_code[idx] = 0;
-    return raise_zmk_keycode_state_changed_from_encoded(code, false, event.timestamp);
+    return 0;
 }
 
 static const struct behavior_driver_api behavior_dyn_driver_api = {

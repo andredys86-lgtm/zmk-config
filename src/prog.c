@@ -4,10 +4,12 @@
 #include <zephyr/logging/log.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zmk/event_manager.h>
 #include <zmk/events/layer_state_changed.h>
+#include <zmk/events/keycode_state_changed.h>
 
 #include "prog.h"
 #include "keylist.h"
@@ -20,11 +22,18 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define EV_NEXT 17
 #define EV_PREV 18
 
+#define HOLD_MS 30
+#define GAP_MS 30
+
 #define GROUP_ITEMS (G_COUNT + 2)
 
 static K_MUTEX_DEFINE(prog_lock);
+static K_MUTEX_DEFINE(play_lock);
 
-static uint32_t map[PROG_KEYS];
+/* Stored sequences, one per programmable key */
+static uint32_t seq[PROG_KEYS][PROG_SEQ_MAX];
+static uint8_t seq_len[PROG_KEYS];
+
 /* 0 = wait for key, 1 = pick group, 2 = pick key inside group */
 static uint8_t menu_state;
 static int menu_target = -1;
@@ -32,6 +41,18 @@ static int menu_group;
 static int menu_pos;
 static bool menu_saved;
 static uint32_t version;
+
+/* Playback state */
+static struct {
+    bool active;
+    uint8_t len;
+    uint8_t pos;
+    uint8_t phase; /* 0 = start next element, 1 = release the held key */
+    uint32_t held;
+    uint32_t items[PROG_SEQ_MAX];
+} pb;
+
+static struct k_work_delayable play_work;
 
 static int group_count(int g) {
     int c = 0;
@@ -69,6 +90,13 @@ static int group_pos_of_code(int g, uint32_t code) {
     return -1;
 }
 
+static uint32_t first_code(int idx) {
+    if (idx < 0 || idx >= PROG_KEYS || seq_len[idx] == 0) {
+        return 0;
+    }
+    return seq[idx][0];
+}
+
 static int list_len(void) {
     if (menu_state == 1) {
         return GROUP_ITEMS;
@@ -95,8 +123,16 @@ static void item_name(int idx, char *out, size_t n) {
     }
 }
 
-static void save_map(const uint32_t *copy) {
-    int rc = settings_save_one("np16/map", copy, sizeof(uint32_t) * PROG_KEYS);
+static void save_seq(int idx, const uint32_t *items, uint8_t len) {
+    char name[16];
+    int rc;
+
+    snprintf(name, sizeof(name), "np16/k%d", idx);
+    if (len == 0) {
+        rc = settings_delete(name);
+    } else {
+        rc = settings_save_one(name, items, (size_t)len * sizeof(uint32_t));
+    }
     if (rc != 0) {
         LOG_ERR("np16 save failed: %d", rc);
     }
@@ -104,19 +140,130 @@ static void save_map(const uint32_t *copy) {
 
 static int np16_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg) {
     const char *next;
+
+    /* legacy single-array record from the old format: ignore it */
     if (settings_name_steq(name, "map", &next) && !next) {
-        if (len != sizeof(map)) {
+        return 0;
+    }
+
+    if (name[0] == 'k') {
+        char *end;
+        long idx = strtol(name + 1, &end, 10);
+        if (end == name + 1 || *end != '\0' || idx < 0 || idx >= PROG_KEYS) {
+            return -ENOENT;
+        }
+        if (len == 0 || (len % sizeof(uint32_t)) != 0 ||
+            (len / sizeof(uint32_t)) > PROG_SEQ_MAX) {
             return -EINVAL;
         }
-        int rc = read_cb(cb_arg, map, sizeof(map));
-        return rc >= 0 ? 0 : rc;
+        uint32_t tmp[PROG_SEQ_MAX];
+        int rc = read_cb(cb_arg, tmp, len);
+        if (rc < 0) {
+            return rc;
+        }
+        memcpy(seq[idx], tmp, len);
+        seq_len[idx] = (uint8_t)(len / sizeof(uint32_t));
+        return 0;
     }
     return -ENOENT;
 }
 
 SETTINGS_STATIC_HANDLER_DEFINE(np16, "np16", NULL, np16_set, NULL, NULL);
 
+static void play_step(struct k_work *work) {
+    bool do_press = false;
+    bool do_release = false;
+    bool reschedule = false;
+    uint32_t code = 0;
+    uint32_t wait_ms = 0;
+
+    k_mutex_lock(&play_lock, K_FOREVER);
+    if (!pb.active) {
+        k_mutex_unlock(&play_lock);
+        return;
+    }
+    if (pb.phase == 1) {
+        do_release = true;
+        code = pb.held;
+        pb.held = 0;
+        pb.phase = 0;
+        pb.pos++;
+        if (pb.pos >= pb.len) {
+            pb.active = false;
+        } else {
+            reschedule = true;
+            wait_ms = GAP_MS;
+        }
+    } else {
+        uint32_t e = pb.items[pb.pos];
+        if (PROG_IS_DELAY(e)) {
+            pb.pos++;
+            if (pb.pos >= pb.len) {
+                pb.active = false;
+            } else {
+                reschedule = true;
+                wait_ms = PROG_DELAY_MS(e);
+            }
+        } else {
+            do_press = true;
+            code = e;
+            pb.held = e;
+            pb.phase = 1;
+            reschedule = true;
+            wait_ms = HOLD_MS;
+        }
+    }
+    k_mutex_unlock(&play_lock);
+
+    if (do_press) {
+        raise_zmk_keycode_state_changed_from_encoded(code, true, k_uptime_get());
+    }
+    if (do_release) {
+        raise_zmk_keycode_state_changed_from_encoded(code, false, k_uptime_get());
+    }
+    if (reschedule) {
+        k_work_schedule(&play_work, K_MSEC(wait_ms));
+    }
+}
+
+void prog_play(uint32_t idx) {
+    uint32_t items[PROG_SEQ_MAX];
+    uint8_t len;
+
+    if (idx >= PROG_KEYS) {
+        return;
+    }
+
+    k_mutex_lock(&prog_lock, K_FOREVER);
+    len = seq_len[idx];
+    if (len > 0) {
+        memcpy(items, seq[idx], (size_t)len * sizeof(uint32_t));
+    }
+    k_mutex_unlock(&prog_lock);
+
+    if (len == 0) {
+        return;
+    }
+
+    k_mutex_lock(&play_lock, K_FOREVER);
+    if (pb.active) {
+        k_mutex_unlock(&play_lock);
+        return;
+    }
+    pb.active = true;
+    pb.len = len;
+    pb.pos = 0;
+    pb.phase = 0;
+    pb.held = 0;
+    memcpy(pb.items, items, (size_t)len * sizeof(uint32_t));
+    k_mutex_unlock(&play_lock);
+
+    k_work_schedule(&play_work, K_NO_WAIT);
+}
+
 static int prog_init(void) {
+    k_work_init_delayable(&play_work, play_step);
+
     int rc = settings_subsys_init();
     if (rc != 0) {
         LOG_ERR("settings init failed: %d", rc);
@@ -145,16 +292,10 @@ static int prog_layer_listener(const zmk_event_t *eh) {
 ZMK_LISTENER(prog_layer, prog_layer_listener);
 ZMK_SUBSCRIPTION(prog_layer, zmk_layer_state_changed);
 
-uint32_t prog_get_code(uint32_t idx) {
-    if (idx >= PROG_KEYS) {
-        return 0;
-    }
-    return map[idx];
-}
-
 void prog_menu_event(uint32_t ev) {
-    uint32_t copy[PROG_KEYS];
-    bool need_save = false;
+    int save_idx = -1;
+    uint8_t save_len = 0;
+    uint32_t save_items[PROG_SEQ_MAX];
 
     k_mutex_lock(&prog_lock, K_FOREVER);
     if (menu_state == 0) {
@@ -176,16 +317,16 @@ void prog_menu_event(uint32_t ev) {
                     menu_state = 0;
                     menu_target = -1;
                 } else if (menu_pos == 1) {
-                    map[menu_target] = 0;
-                    memcpy(copy, map, sizeof(copy));
-                    need_save = true;
+                    seq_len[menu_target] = 0;
+                    save_idx = menu_target;
+                    save_len = 0;
                     menu_state = 0;
                     menu_target = -1;
                     menu_saved = true;
                 } else {
                     menu_group = menu_pos - 2;
                     menu_state = 2;
-                    int k = group_pos_of_code(menu_group, map[menu_target]);
+                    int k = group_pos_of_code(menu_group, first_code(menu_target));
                     menu_pos = (k >= 0) ? k + 1 : 1;
                 }
             } else {
@@ -195,9 +336,11 @@ void prog_menu_event(uint32_t ev) {
                 } else {
                     const struct key_entry *e = group_item(menu_group, menu_pos - 1);
                     if (e != NULL) {
-                        map[menu_target] = e->code;
-                        memcpy(copy, map, sizeof(copy));
-                        need_save = true;
+                        seq[menu_target][0] = e->code;
+                        seq_len[menu_target] = 1;
+                        save_idx = menu_target;
+                        save_len = 1;
+                        save_items[0] = e->code;
                         menu_state = 0;
                         menu_target = -1;
                         menu_saved = true;
@@ -209,8 +352,8 @@ void prog_menu_event(uint32_t ev) {
     version++;
     k_mutex_unlock(&prog_lock);
 
-    if (need_save) {
-        save_map(copy);
+    if (save_idx >= 0) {
+        save_seq(save_idx, save_items, save_len);
     }
 }
 

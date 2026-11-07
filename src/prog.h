@@ -6,10 +6,8 @@
 #define PROG_KEYS 17
 
 struct prog_view {
-    uint8_t state;
-    int target;
-    const char *name;
-    bool saved;
+    char title[24];
+    char rows[3][24];
 };
 
 uint32_t prog_get_code(uint32_t idx);

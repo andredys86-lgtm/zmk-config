@@ -3,6 +3,7 @@
 #include <zephyr/settings/settings.h>
 #include <zephyr/logging/log.h>
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <zmk/event_manager.h>
@@ -19,22 +20,79 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define EV_NEXT 17
 #define EV_PREV 18
 
+#define GROUP_ITEMS (G_COUNT + 2)
+
 static K_MUTEX_DEFINE(prog_lock);
 
 static uint32_t map[PROG_KEYS];
+/* 0 = wait for key, 1 = pick group, 2 = pick key inside group */
 static uint8_t menu_state;
 static int menu_target = -1;
+static int menu_group;
 static int menu_pos;
 static bool menu_saved;
 static uint32_t version;
 
-static int find_pos(uint32_t code) {
+static int group_count(int g) {
+    int c = 0;
     for (size_t i = 0; i < key_list_len; i++) {
-        if (key_list[i].code == code) {
-            return (int)i;
+        if (key_list[i].group == g) {
+            c++;
         }
     }
-    return 0;
+    return c;
+}
+
+static const struct key_entry *group_item(int g, int k) {
+    int c = 0;
+    for (size_t i = 0; i < key_list_len; i++) {
+        if (key_list[i].group == g) {
+            if (c == k) {
+                return &key_list[i];
+            }
+            c++;
+        }
+    }
+    return NULL;
+}
+
+static int group_pos_of_code(int g, uint32_t code) {
+    int c = 0;
+    for (size_t i = 0; i < key_list_len; i++) {
+        if (key_list[i].group == g) {
+            if (key_list[i].code == code) {
+                return c;
+            }
+            c++;
+        }
+    }
+    return -1;
+}
+
+static int list_len(void) {
+    if (menu_state == 1) {
+        return GROUP_ITEMS;
+    }
+    return 1 + group_count(menu_group);
+}
+
+static void item_name(int idx, char *out, size_t n) {
+    if (menu_state == 1) {
+        if (idx == 0) {
+            snprintf(out, n, "< Cancel");
+        } else if (idx == 1) {
+            snprintf(out, n, "Clear key");
+        } else {
+            snprintf(out, n, "%s", group_names[idx - 2]);
+        }
+    } else {
+        if (idx == 0) {
+            snprintf(out, n, "< Back");
+        } else {
+            const struct key_entry *e = group_item(menu_group, idx - 1);
+            snprintf(out, n, "%s", e ? e->name : "?");
+        }
+    }
 }
 
 static void save_map(const uint32_t *copy) {
@@ -75,6 +133,7 @@ static int prog_layer_listener(const zmk_event_t *eh) {
         k_mutex_lock(&prog_lock, K_FOREVER);
         menu_state = 0;
         menu_target = -1;
+        menu_group = 0;
         menu_pos = 0;
         menu_saved = false;
         version++;
@@ -98,27 +157,53 @@ void prog_menu_event(uint32_t ev) {
     bool need_save = false;
 
     k_mutex_lock(&prog_lock, K_FOREVER);
-    if (ev < MATRIX_KEYS) {
-        menu_target = (int)ev;
-        menu_pos = find_pos(map[ev]);
-        menu_state = 1;
-        menu_saved = false;
-    } else if (ev == EV_CONFIRM) {
-        if (menu_state == 1 && menu_target >= 0) {
-            map[menu_target] = key_list[menu_pos].code;
-            memcpy(copy, map, sizeof(copy));
-            need_save = true;
-            menu_state = 0;
-            menu_target = -1;
-            menu_saved = true;
+    if (menu_state == 0) {
+        if (ev < MATRIX_KEYS) {
+            menu_target = (int)ev;
+            menu_state = 1;
+            menu_pos = 2;
+            menu_saved = false;
         }
-    } else if (ev == EV_NEXT) {
-        if (menu_state == 1) {
-            menu_pos = (menu_pos + 1) % (int)key_list_len;
-        }
-    } else if (ev == EV_PREV) {
-        if (menu_state == 1) {
-            menu_pos = (menu_pos + (int)key_list_len - 1) % (int)key_list_len;
+    } else {
+        int len = list_len();
+        if (ev == EV_NEXT) {
+            menu_pos = (menu_pos + 1) % len;
+        } else if (ev == EV_PREV) {
+            menu_pos = (menu_pos + len - 1) % len;
+        } else if (ev == EV_CONFIRM) {
+            if (menu_state == 1) {
+                if (menu_pos == 0) {
+                    menu_state = 0;
+                    menu_target = -1;
+                } else if (menu_pos == 1) {
+                    map[menu_target] = 0;
+                    memcpy(copy, map, sizeof(copy));
+                    need_save = true;
+                    menu_state = 0;
+                    menu_target = -1;
+                    menu_saved = true;
+                } else {
+                    menu_group = menu_pos - 2;
+                    menu_state = 2;
+                    int k = group_pos_of_code(menu_group, map[menu_target]);
+                    menu_pos = (k >= 0) ? k + 1 : 1;
+                }
+            } else {
+                if (menu_pos == 0) {
+                    menu_state = 1;
+                    menu_pos = menu_group + 2;
+                } else {
+                    const struct key_entry *e = group_item(menu_group, menu_pos - 1);
+                    if (e != NULL) {
+                        map[menu_target] = e->code;
+                        memcpy(copy, map, sizeof(copy));
+                        need_save = true;
+                        menu_state = 0;
+                        menu_target = -1;
+                        menu_saved = true;
+                    }
+                }
+            }
         }
     }
     version++;
@@ -130,11 +215,33 @@ void prog_menu_event(uint32_t ev) {
 }
 
 void prog_get_view(struct prog_view *v) {
+    char nm[24];
+
     k_mutex_lock(&prog_lock, K_FOREVER);
-    v->state = menu_state;
-    v->target = menu_target;
-    v->name = key_list[menu_pos].name;
-    v->saved = menu_saved;
+    v->title[0] = '\0';
+    v->rows[0][0] = '\0';
+    v->rows[1][0] = '\0';
+    v->rows[2][0] = '\0';
+
+    if (menu_state == 0) {
+        snprintf(v->title, sizeof(v->title), "MENU");
+        snprintf(v->rows[1], sizeof(v->rows[1]), "Press key");
+        snprintf(v->rows[2], sizeof(v->rows[2]), "%s", menu_saved ? "Saved!" : "hold: exit");
+    } else {
+        int len = list_len();
+        if (menu_state == 1) {
+            snprintf(v->title, sizeof(v->title), "Key %d", menu_target + 1);
+        } else {
+            snprintf(v->title, sizeof(v->title), "Key %d: %s", menu_target + 1,
+                     group_names[menu_group]);
+        }
+        item_name((menu_pos + len - 1) % len, nm, sizeof(nm));
+        snprintf(v->rows[0], sizeof(v->rows[0]), "  %s", nm);
+        item_name(menu_pos, nm, sizeof(nm));
+        snprintf(v->rows[1], sizeof(v->rows[1]), "> %s", nm);
+        item_name((menu_pos + 1) % len, nm, sizeof(nm));
+        snprintf(v->rows[2], sizeof(v->rows[2]), "  %s", nm);
+    }
     k_mutex_unlock(&prog_lock);
 }
 

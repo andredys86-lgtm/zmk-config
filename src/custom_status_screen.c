@@ -24,9 +24,10 @@ static lv_obj_t *conn_icon;
 static lv_obj_t *layer_num;
 static lv_obj_t *calc_num;
 static lv_obj_t *calc_op;
-static lv_obj_t *info1;
-static lv_obj_t *info2;
-static lv_obj_t *info3;
+static lv_obj_t *info_t;
+static lv_obj_t *info_a;
+static lv_obj_t *info_b;
+static lv_obj_t *info_c;
 static uint32_t tick;
 
 static const char *battery_symbol(uint8_t level) {
@@ -146,9 +147,10 @@ static void refresh_cb(lv_timer_t *timer) {
 
     bool on_prog = (layer == PROG_LAYER || layer == MENU_LAYER);
     if ((int)on_prog != last_prog_shown) {
-        set_hidden(info1, !on_prog);
-        set_hidden(info2, !on_prog);
-        set_hidden(info3, !on_prog);
+        set_hidden(info_t, !on_prog);
+        set_hidden(info_a, !on_prog);
+        set_hidden(info_b, !on_prog);
+        set_hidden(info_c, !on_prog);
         last_prog_shown = on_prog;
         last_prog_ver = 0xFFFFFFFF;
     }
@@ -156,23 +158,17 @@ static void refresh_cb(lv_timer_t *timer) {
         uint32_t pv = prog_version();
         if (pv != last_prog_ver || layer != last_prog_layer) {
             if (layer == PROG_LAYER) {
-                lv_label_set_text(info1, "Layer 2");
-                lv_label_set_text(info2, "");
-                lv_label_set_text(info3, "hold: menu");
+                lv_label_set_text(info_t, "PROG");
+                lv_label_set_text(info_a, "");
+                lv_label_set_text(info_b, "Layer 2");
+                lv_label_set_text(info_c, "hold: menu");
             } else {
                 struct prog_view v;
                 prog_get_view(&v);
-                if (v.state == 0) {
-                    lv_label_set_text(info1, "MENU");
-                    lv_label_set_text(info2, "Press key");
-                    lv_label_set_text(info3, v.saved ? "Saved!" : "hold: exit");
-                } else {
-                    char b[16];
-                    snprintf(b, sizeof(b), "Key %d", v.target + 1);
-                    lv_label_set_text(info1, b);
-                    lv_label_set_text(info2, v.name);
-                    lv_label_set_text(info3, "click: save");
-                }
+                lv_label_set_text(info_t, v.title);
+                lv_label_set_text(info_a, v.rows[0]);
+                lv_label_set_text(info_b, v.rows[1]);
+                lv_label_set_text(info_c, v.rows[2]);
             }
             last_prog_ver = pv;
             last_prog_layer = layer;
@@ -202,9 +198,10 @@ lv_obj_t *zmk_display_status_screen() {
     lv_label_set_text(calc_num, "");
     lv_obj_align(calc_num, LV_ALIGN_TOP_LEFT, 0, 24);
 
-    info1 = make_info(screen, &lv_font_montserrat_14, 2);
-    info2 = make_info(screen, &lv_font_montserrat_20, 22);
-    info3 = make_info(screen, &lv_font_montserrat_14, 48);
+    info_t = make_info(screen, &lv_font_montserrat_10, 0);
+    info_a = make_info(screen, &lv_font_montserrat_14, 13);
+    info_b = make_info(screen, &lv_font_montserrat_14, 29);
+    info_c = make_info(screen, &lv_font_montserrat_14, 45);
 
     refresh_cb(NULL);
     lv_timer_create(refresh_cb, 100, NULL);

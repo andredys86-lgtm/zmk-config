@@ -1,20 +1,54 @@
 #include <behaviors.dtsi>
 #include <dt-bindings/zmk/keys.h>
 
+#define CALC_DOT 10
+#define CALC_ADD 11
+#define CALC_SUB 12
+#define CALC_MUL 13
+#define CALC_DIV 14
+#define CALC_EQ 15
+#define CALC_CLR 16
+
 / {
+    behaviors {
+        calc: calc {
+            compatible = "zmk,behavior-calc";
+            #binding-cells = <1>;
+            display-name = "Calc";
+        };
+
+        layer_enc: layer_enc {
+            compatible = "zmk,behavior-sensor-rotate";
+            #sensor-binding-cells = <0>;
+            bindings = <&to 1>, <&to 0>;
+        };
+    };
+
     keymap {
         compatible = "zmk,keymap";
 
         default_layer {
             bindings = <
-                &kp KP_N7  &kp KP_N8   &kp KP_N9     &kp KP_DIVIDE
-                &kp KP_N4  &kp KP_N5   &kp KP_N6     &kp KP_MULTIPLY
-                &kp KP_N1  &kp KP_N2   &kp KP_N3     &kp KP_MINUS
-                &kp KP_N0  &kp KP_DOT  &kp KP_ENTER  &kp KP_PLUS
+                &kp KP_N7  &kp KP_N8        &kp KP_N9   &kp KP_DIVIDE
+                &kp KP_N4  &kp KP_N5        &kp KP_N6   &kp KP_MINUS
+                &kp KP_N1  &kp KP_N2        &kp KP_N3   &kp KP_PLUS
+                &kp KP_N0  &kp KP_MULTIPLY  &kp KP_DOT  &kp KP_ENTER
                 &kp N3
             >;
 
-            sensor-bindings = <&inc_dec_kp N1 N2>;
+            sensor-bindings = <&layer_enc>;
+        };
+
+        calc_layer {
+            bindings = <
+                &calc 7  &calc 8         &calc 9         &calc CALC_DIV
+                &calc 4  &calc 5         &calc 6         &calc CALC_SUB
+                &calc 1  &calc 2         &calc 3         &calc CALC_ADD
+                &calc 0  &calc CALC_MUL  &calc CALC_DOT  &calc CALC_EQ
+                &calc CALC_CLR
+            >;
+
+            sensor-bindings = <&layer_enc>;
         };
     };
 };

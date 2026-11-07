@@ -10,14 +10,18 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/ble.h>
 #include <zmk/endpoints.h>
 #include <zmk/keymap.h>
+#include "calc.h"
 
 #define BAR_W 20
+#define CALC_LAYER 1
 
 static lv_obj_t *batt_icon;
 static lv_obj_t *batt_pct;
 static lv_obj_t *conn_icon;
 static lv_obj_t *layer_num;
-static uint8_t tick;
+static lv_obj_t *calc_num;
+static lv_obj_t *calc_op;
+static uint32_t tick;
 
 static const char *battery_symbol(uint8_t level) {
     if (level > 85) {
@@ -51,6 +55,8 @@ static void refresh_cb(lv_timer_t *timer) {
     static int last_usb = -1;
     static int last_layer = -1;
     static int last_hidden = -1;
+    static int last_calc_shown = -1;
+    static uint32_t last_calc_ver = 0xFFFFFFFF;
 
     uint8_t level = zmk_battery_state_of_charge();
     bool charging = zmk_usb_is_powered();
@@ -75,7 +81,7 @@ static void refresh_cb(lv_timer_t *timer) {
 
     int hidden = 0;
     if (!usb && !zmk_ble_active_profile_is_connected()) {
-        hidden = (tick / 2) % 2;
+        hidden = (tick / 5) % 2;
     }
     tick++;
     if (hidden != last_hidden) {
@@ -93,6 +99,32 @@ static void refresh_cb(lv_timer_t *timer) {
         lv_label_set_text(layer_num, buf);
         last_layer = layer;
     }
+
+    bool on_calc = (layer == CALC_LAYER);
+    if ((int)on_calc != last_calc_shown) {
+        if (on_calc) {
+            lv_obj_clear_flag(calc_num, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(calc_op, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(calc_num, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(calc_op, LV_OBJ_FLAG_HIDDEN);
+        }
+        last_calc_shown = on_calc;
+        last_calc_ver = 0xFFFFFFFF;
+    }
+    if (on_calc) {
+        uint32_t ver = calc_version();
+        if (ver != last_calc_ver) {
+            char num[16];
+            char op[2] = {0, 0};
+            char opc = 0;
+            calc_get_display(num, sizeof(num), &opc);
+            op[0] = opc;
+            lv_label_set_text(calc_num, num);
+            lv_label_set_text(calc_op, op);
+            last_calc_ver = ver;
+        }
+    }
 }
 
 lv_obj_t *zmk_display_status_screen() {
@@ -104,8 +136,21 @@ lv_obj_t *zmk_display_status_screen() {
     conn_icon = make_label(screen, &lv_font_montserrat_14, 27);
     layer_num = make_label(screen, &lv_font_montserrat_20, 41);
 
+    calc_op = lv_label_create(screen);
+    lv_obj_set_width(calc_op, 20);
+    lv_obj_set_style_text_font(calc_op, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_label_set_text(calc_op, "");
+    lv_obj_align(calc_op, LV_ALIGN_TOP_LEFT, 2, 2);
+
+    calc_num = lv_label_create(screen);
+    lv_obj_set_width(calc_num, 104);
+    lv_obj_set_style_text_font(calc_num, &lv_font_montserrat_20, LV_PART_MAIN);
+    lv_obj_set_style_text_align(calc_num, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
+    lv_label_set_text(calc_num, "");
+    lv_obj_align(calc_num, LV_ALIGN_TOP_LEFT, 0, 24);
+
     refresh_cb(NULL);
-    lv_timer_create(refresh_cb, 250, NULL);
+    lv_timer_create(refresh_cb, 100, NULL);
 
     return screen;
 }

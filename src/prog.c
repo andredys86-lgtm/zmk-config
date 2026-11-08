@@ -28,6 +28,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #define GRID_CELLS 12
 #define CELL_MOD 7
+#define CELL_DELAY 8
 #define CELL_CLEAR 9
 #define CELL_SAVE 10
 #define CELL_CANCEL 11
@@ -36,12 +37,18 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define MOD_CLR_CELL 4
 #define MOD_BACK_CELL 5
 
+#define DLY_CELLS 12
+#define DLY_NAV 11
+#define DLY_CUSTOM_CELL 9
+#define DLY_BACK_CELL 10
+
 #define UNDO_MAX 64
 #define MEDIA_PAGE 0x0Cu
 #define MARKER "\xE2\x80\xA2"
 
-enum { ST_PICK = 0, ST_GROUPS = 1, ST_KEYS = 2, ST_MODS = 3 };
+enum { ST_PICK = 0, ST_GROUPS = 1, ST_KEYS = 2, ST_MODS = 3, ST_DELAY = 4 };
 enum { U_ITEM = 0, U_MODON = 1, U_MARK = 2 };
+enum { DLY_ONCE = 0, DLY_REPEAT = 1, DLY_OFF = 2 };
 
 static const char *const grid_names[GRID_CELLS] = {
     "ABC", "NUM", "F-F", "NAV", "SYM", "KP", "MED", "MOD", "DELAY", "CLEAR", "SAVE", "CANCEL",
@@ -50,6 +57,12 @@ static const char *const grid_names[GRID_CELLS] = {
 static const char *const mod_names[MOD_CELLS] = {
     "CTRL", "SHIFT", "ALT", "GUI", "M.CLR", "BACK",
 };
+
+static const char *const dly_names[DLY_NAV] = {
+    "ONCE", "REPEAT", "OFF", "50", "100", "250", "500", "1000", "2000", "CUSTOM", "BACK",
+};
+
+static const uint16_t dly_values[6] = {50, 100, 250, 500, 1000, 2000};
 
 static K_MUTEX_DEFINE(prog_lock);
 static K_MUTEX_DEFINE(play_lock);
@@ -72,6 +85,12 @@ static uint8_t mods; /* active modifiers: 1 = C, 2 = S, 4 = A, 8 = G */
 static uint8_t msg_kind;
 static int64_t msg_until;
 static uint32_t version;
+
+/* Delay settings of the current programming session */
+static uint8_t dly_sel_mode; /* DLY_ONCE, DLY_REPEAT or DLY_OFF */
+static uint16_t dly_ms;
+static bool dly_armed;
+static int dly_cur;
 
 /* Edit history, in the order things were done. U_ITEM stands for the next
  * element of edit_items, U_MODON for a modifier that was switched on (bit in
@@ -192,6 +211,50 @@ static void reset_edit(void) {
     edit_len = 0;
     ucount = 0;
     mods = 0;
+    dly_sel_mode = DLY_ONCE;
+    dly_ms = 50;
+    dly_armed = false;
+    dly_cur = 0;
+}
+
+static void push_item(uint32_t code) {
+    edit_items[edit_len++] = code;
+    upush(U_ITEM, 0);
+}
+
+/* Adds one element together with the delays the current delay mode asks for.
+ * Returns false (and shows FULL) when there is no room. */
+static bool add_element(uint32_t code) {
+    bool pre = false;
+    bool post = false;
+
+    if (dly_armed && dly_sel_mode == DLY_REPEAT && edit_len > 0 &&
+        !PROG_IS_DELAY(edit_items[edit_len - 1])) {
+        pre = true;
+    }
+    if (dly_armed && dly_sel_mode == DLY_ONCE) {
+        post = true;
+    }
+
+    int need = 1 + (pre ? 1 : 0);
+    if (edit_len + need > PROG_SEQ_MAX || ucount + need + 1 > UNDO_MAX) {
+        set_msg(PROG_MSG_FULL);
+        return false;
+    }
+
+    if (pre) {
+        push_item(PROG_DELAY(dly_ms));
+    }
+    push_item(code);
+    if (post) {
+        if (edit_len < PROG_SEQ_MAX && ucount < UNDO_MAX) {
+            push_item(PROG_DELAY(dly_ms));
+        }
+        /* a one-time delay switches itself off after use */
+        dly_armed = false;
+        dly_sel_mode = DLY_OFF;
+    }
+    return true;
 }
 
 /* true when the currently active modifiers were already applied to a key */
@@ -546,6 +609,9 @@ static void groups_event(uint32_t ev, struct save_req *sr) {
         } else if (grp_cur == CELL_MOD) {
             mod_cur = 0;
             menu_state = ST_MODS;
+        } else if (grp_cur == CELL_DELAY) {
+            dly_cur = 0;
+            menu_state = ST_DELAY;
         } else if (grp_cur == CELL_CLEAR) {
             do_clear();
         } else if (grp_cur == CELL_SAVE) {
@@ -567,7 +633,6 @@ static void groups_event(uint32_t ev, struct save_req *sr) {
             reset_edit();
             set_msg(PROG_MSG_CANCELLED);
         }
-        /* DELAY does nothing yet */
     }
 }
 
@@ -603,16 +668,11 @@ static void keys_event(uint32_t ev) {
                 /* a media command cannot be combined with other keys or modifiers */
                 bool reject = media ? (mods != 0 || has_normal()) : has_media();
                 if (!reject) {
-                    if (edit_len >= PROG_SEQ_MAX || ucount >= UNDO_MAX) {
-                        set_msg(PROG_MSG_FULL);
-                    } else {
-                        uint32_t code = e->code;
-                        if (!media) {
-                            code |= ((uint32_t)mods << 24);
-                        }
-                        edit_items[edit_len++] = code;
-                        upush(U_ITEM, 0);
+                    uint32_t code = e->code;
+                    if (!media) {
+                        code |= ((uint32_t)mods << 24);
                     }
+                    add_element(code);
                 }
             }
             menu_state = ST_GROUPS;
@@ -655,6 +715,27 @@ static void mods_event(uint32_t ev) {
     }
 }
 
+static void delay_event(uint32_t ev) {
+    if (ev == EV_NEXT) {
+        dly_cur = (dly_cur + 1) % DLY_NAV;
+    } else if (ev == EV_PREV) {
+        dly_cur = (dly_cur + DLY_NAV - 1) % DLY_NAV;
+    } else if (ev == EV_CONFIRM) {
+        if (dly_cur <= 2) {
+            /* mode: ONCE, REPEAT or OFF */
+            dly_sel_mode = (uint8_t)dly_cur;
+            dly_armed = (dly_sel_mode != DLY_OFF);
+        } else if (dly_cur < DLY_CUSTOM_CELL) {
+            /* value: 50 ... 2000 ms */
+            dly_ms = dly_values[dly_cur - 3];
+            dly_armed = (dly_sel_mode != DLY_OFF);
+        } else if (dly_cur == DLY_BACK_CELL) {
+            menu_state = ST_GROUPS;
+        }
+        /* CUSTOM does nothing yet */
+    }
+}
+
 void prog_menu_event(uint32_t ev) {
     struct save_req sr;
     sr.idx = -1;
@@ -667,8 +748,10 @@ void prog_menu_event(uint32_t ev) {
         groups_event(ev, &sr);
     } else if (menu_state == ST_KEYS) {
         keys_event(ev);
-    } else {
+    } else if (menu_state == ST_MODS) {
         mods_event(ev);
+    } else {
+        delay_event(ev);
     }
     version++;
     k_mutex_unlock(&prog_lock);
@@ -723,6 +806,21 @@ void prog_get_menu_view(struct prog_menu_view *v) {
             snprintf(v->cell[i], sizeof(v->cell[i]), "%s", mod_names[i]);
         }
         v->hl_mask = (uint32_t)(mods & 0x0F);
+        build_seq(v->seq, sizeof(v->seq));
+    } else if (menu_state == ST_DELAY) {
+        uint32_t hl = (1u << dly_sel_mode);
+        v->cells = DLY_CELLS;
+        v->cursor = (uint8_t)dly_cur;
+        for (int i = 0; i < DLY_NAV; i++) {
+            snprintf(v->cell[i], sizeof(v->cell[i]), "%s", dly_names[i]);
+        }
+        snprintf(v->cell[DLY_NAV], sizeof(v->cell[DLY_NAV]), "[%u]", (unsigned int)dly_ms);
+        for (int i = 0; i < 6; i++) {
+            if (dly_values[i] == dly_ms) {
+                hl |= (1u << (3 + i));
+            }
+        }
+        v->hl_mask = hl;
         build_seq(v->seq, sizeof(v->seq));
     }
     k_mutex_unlock(&prog_lock);

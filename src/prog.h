@@ -20,6 +20,7 @@
 #define PROG_MODE_GROUPS 1
 #define PROG_MODE_KEYS 2
 #define PROG_MODE_MODS 3
+#define PROG_MODE_DELAY 4
 
 /* centre messages */
 #define PROG_MSG_NONE 0
@@ -36,7 +37,7 @@ struct prog_menu_view {
     uint8_t cursor;
     uint8_t msg_kind;
     uint32_t version;
-    uint32_t hl_mask; /* cells drawn with a thick border (active modifiers) */
+    uint32_t hl_mask; /* cells drawn with a thick border (active modifiers, delay choice) */
     char cell[PROG_MENU_MAX_CELLS][8];
     char seq[200];
 };

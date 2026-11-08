@@ -26,8 +26,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #define SCR_W 128
 #define SCR_H 64
-#define MN_SEQ_Y 53
-#define MN_SEQ_H 11
+#define MN_SEQ_Y 47
+#define MN_SEQ_H 17
+#define MN_GRID_H 46
 
 static lv_obj_t *batt_icon;
 static lv_obj_t *batt_pct;
@@ -163,7 +164,7 @@ static void init_styles(void) {
 
     lv_style_init(&st_txt);
     lv_style_set_text_color(&st_txt, MN_FG);
-    lv_style_set_text_font(&st_txt, &lv_font_montserrat_10);
+    lv_style_set_text_font(&st_txt, &lv_font_montserrat_14);
 
     lv_style_init(&st_center);
     lv_style_set_text_color(&st_center, MN_FG);
@@ -232,7 +233,7 @@ static void build_menu(lv_obj_t *screen) {
 /* Shows the tail of the sequence that fits the row, with ".." when the
  * beginning is hidden. */
 static void seq_tail(const char *full, char *out, size_t n) {
-    const lv_font_t *f = &lv_font_montserrat_10;
+    const lv_font_t *f = &lv_font_montserrat_14;
 
     if (lv_txt_get_width(full, strlen(full), f, 0, 0) <= SCR_W - 1) {
         snprintf(out, n, "%s", full);
@@ -257,8 +258,12 @@ static void menu_apply(const struct prog_menu_view *v) {
     static char tail[128];
 
     int cols = v->cols > 0 ? v->cols : 3;
+    int rows = v->rows > 0 ? v->rows : 4;
     int cw = 127 / cols;
     int ch = (v->font == 14) ? 17 : 12;
+    if (rows * ch + 1 > MN_GRID_H) {
+        ch = (MN_GRID_H - 1) / rows;
+    }
     const lv_font_t *font = (v->font == 14) ? &lv_font_montserrat_14 : &lv_font_montserrat_10;
 
     for (int i = 0; i < PROG_MENU_MAX_CELLS; i++) {

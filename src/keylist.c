@@ -17,7 +17,7 @@ const char *const group_names[G_COUNT] = {
 
 /* key page grid for every group: columns, rows per page and font size */
 const uint8_t group_cols[G_COUNT] = {6, 6, 4, 3, 6, 3};
-const uint8_t group_rows[G_COUNT] = {3, 3, 3, 4, 3, 4};
+const uint8_t group_rows[G_COUNT] = {2, 2, 2, 3, 2, 3};
 const uint8_t group_font[G_COUNT] = {14, 14, 14, 10, 14, 10};
 
 const struct key_entry key_list[] = {

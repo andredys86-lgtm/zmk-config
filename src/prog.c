@@ -24,7 +24,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #define HOLD_MS 30
 #define GAP_MS 30
-#define MSG_MS 1500
+#define MSG_MS 800
 
 #define GRID_CELLS 12
 #define CELL_CLEAR 9
@@ -327,17 +327,18 @@ static void groups_event(uint32_t ev, struct save_req *sr) {
                 edit_len--;
             }
         } else if (grp_cur == CELL_SAVE) {
+            /* an empty sequence is saved too: it erases the assignment */
+            seq_len[edit_target] = edit_len;
             if (edit_len > 0) {
-                seq_len[edit_target] = edit_len;
                 memcpy(seq[edit_target], edit_items, (size_t)edit_len * sizeof(uint32_t));
-                sr->idx = edit_target;
-                sr->len = edit_len;
                 memcpy(sr->items, edit_items, (size_t)edit_len * sizeof(uint32_t));
-                menu_state = ST_PICK;
-                edit_target = -1;
-                edit_len = 0;
-                set_msg(PROG_MSG_SAVED);
             }
+            sr->idx = edit_target;
+            sr->len = edit_len;
+            menu_state = ST_PICK;
+            edit_target = -1;
+            edit_len = 0;
+            set_msg(PROG_MSG_SAVED);
         } else if (grp_cur == CELL_CANCEL) {
             menu_state = ST_PICK;
             edit_target = -1;

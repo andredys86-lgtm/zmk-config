@@ -24,8 +24,19 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #define HOLD_MS 30
 #define GAP_MS 30
+#define MSG_MS 1500
 
-#define GROUP_ITEMS (G_COUNT + 2)
+#define GRID_CELLS 12
+#define CELL_CLEAR 9
+#define CELL_SAVE 10
+#define CELL_CANCEL 11
+#define KEY_ROWS 4
+
+enum { ST_PICK = 0, ST_GROUPS = 1, ST_KEYS = 2 };
+
+static const char *const grid_names[GRID_CELLS] = {
+    "ABC", "NUM", "F-F", "NAV", "SYM", "KP", "MED", "MOD", "DELAY", "CLEAR", "SAVE", "CANCEL",
+};
 
 static K_MUTEX_DEFINE(prog_lock);
 static K_MUTEX_DEFINE(play_lock);
@@ -34,12 +45,17 @@ static K_MUTEX_DEFINE(play_lock);
 static uint32_t seq[PROG_KEYS][PROG_SEQ_MAX];
 static uint8_t seq_len[PROG_KEYS];
 
-/* 0 = wait for key, 1 = pick group, 2 = pick key inside group */
+/* Menu state */
 static uint8_t menu_state;
-static int menu_target = -1;
-static int menu_group;
-static int menu_pos;
-static bool menu_saved;
+static int edit_target = -1;
+static uint32_t edit_items[PROG_SEQ_MAX];
+static uint8_t edit_len;
+static int grp_cur;
+static int cur_group;
+static int key_page;
+static int key_idx;
+static uint8_t msg_kind;
+static int64_t msg_until;
 static uint32_t version;
 
 /* Playback state */
@@ -53,6 +69,12 @@ static struct {
 } pb;
 
 static struct k_work_delayable play_work;
+
+struct save_req {
+    int idx;
+    uint8_t len;
+    uint32_t items[PROG_SEQ_MAX];
+};
 
 static int group_count(int g) {
     int c = 0;
@@ -77,50 +99,32 @@ static const struct key_entry *group_item(int g, int k) {
     return NULL;
 }
 
-static int group_pos_of_code(int g, uint32_t code) {
-    int c = 0;
-    for (size_t i = 0; i < key_list_len; i++) {
-        if (key_list[i].group == g) {
-            if (key_list[i].code == code) {
-                return c;
-            }
-            c++;
-        }
-    }
-    return -1;
+static int per_page(int g) {
+    return group_cols[g] * KEY_ROWS - 1;
 }
 
-static uint32_t first_code(int idx) {
-    if (idx < 0 || idx >= PROG_KEYS || seq_len[idx] == 0) {
-        return 0;
-    }
-    return seq[idx][0];
+static int page_count(int g) {
+    int n = group_count(g);
+    int per = per_page(g);
+    return (n + per - 1) / per;
 }
 
-static int list_len(void) {
-    if (menu_state == 1) {
-        return GROUP_ITEMS;
+static int cells_on_page(int g, int p) {
+    int n = group_count(g);
+    int per = per_page(g);
+    int rem = n - p * per;
+    if (rem > per) {
+        rem = per;
     }
-    return 1 + group_count(menu_group);
+    if (rem < 0) {
+        rem = 0;
+    }
+    return rem + 1; /* keys plus the BACK cell */
 }
 
-static void item_name(int idx, char *out, size_t n) {
-    if (menu_state == 1) {
-        if (idx == 0) {
-            snprintf(out, n, "< Cancel");
-        } else if (idx == 1) {
-            snprintf(out, n, "Clear key");
-        } else {
-            snprintf(out, n, "%s", group_names[idx - 2]);
-        }
-    } else {
-        if (idx == 0) {
-            snprintf(out, n, "< Back");
-        } else {
-            const struct key_entry *e = group_item(menu_group, idx - 1);
-            snprintf(out, n, "%s", e ? e->name : "?");
-        }
-    }
+static void set_msg(uint8_t kind) {
+    msg_kind = kind;
+    msg_until = k_uptime_get() + MSG_MS;
 }
 
 static void save_seq(int idx, const uint32_t *items, uint8_t len) {
@@ -278,11 +282,14 @@ static int prog_layer_listener(const zmk_event_t *eh) {
     const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
     if (ev != NULL && ev->state && ev->layer == MENU_LAYER) {
         k_mutex_lock(&prog_lock, K_FOREVER);
-        menu_state = 0;
-        menu_target = -1;
-        menu_group = 0;
-        menu_pos = 0;
-        menu_saved = false;
+        menu_state = ST_PICK;
+        edit_target = -1;
+        edit_len = 0;
+        grp_cur = 0;
+        cur_group = 0;
+        key_page = 0;
+        key_idx = 0;
+        msg_kind = PROG_MSG_NONE;
         version++;
         k_mutex_unlock(&prog_lock);
     }
@@ -292,98 +299,170 @@ static int prog_layer_listener(const zmk_event_t *eh) {
 ZMK_LISTENER(prog_layer, prog_layer_listener);
 ZMK_SUBSCRIPTION(prog_layer, zmk_layer_state_changed);
 
-void prog_menu_event(uint32_t ev) {
-    int save_idx = -1;
-    uint8_t save_len = 0;
-    uint32_t save_items[PROG_SEQ_MAX];
-
-    k_mutex_lock(&prog_lock, K_FOREVER);
-    if (menu_state == 0) {
-        if (ev < MATRIX_KEYS) {
-            menu_target = (int)ev;
-            menu_state = 1;
-            menu_pos = 2;
-            menu_saved = false;
+static void pick_event(uint32_t ev) {
+    if (ev < MATRIX_KEYS) {
+        edit_target = (int)ev;
+        edit_len = seq_len[ev];
+        if (edit_len > 0) {
+            memcpy(edit_items, seq[ev], (size_t)edit_len * sizeof(uint32_t));
         }
-    } else {
-        int len = list_len();
-        if (ev == EV_NEXT) {
-            menu_pos = (menu_pos + 1) % len;
-        } else if (ev == EV_PREV) {
-            menu_pos = (menu_pos + len - 1) % len;
-        } else if (ev == EV_CONFIRM) {
-            if (menu_state == 1) {
-                if (menu_pos == 0) {
-                    menu_state = 0;
-                    menu_target = -1;
-                } else if (menu_pos == 1) {
-                    seq_len[menu_target] = 0;
-                    save_idx = menu_target;
-                    save_len = 0;
-                    menu_state = 0;
-                    menu_target = -1;
-                    menu_saved = true;
+        grp_cur = 0;
+        msg_kind = PROG_MSG_NONE;
+        menu_state = ST_GROUPS;
+    }
+}
+
+static void groups_event(uint32_t ev, struct save_req *sr) {
+    if (ev == EV_NEXT) {
+        grp_cur = (grp_cur + 1) % GRID_CELLS;
+    } else if (ev == EV_PREV) {
+        grp_cur = (grp_cur + GRID_CELLS - 1) % GRID_CELLS;
+    } else if (ev == EV_CONFIRM) {
+        if (grp_cur < G_COUNT) {
+            cur_group = grp_cur;
+            key_page = 0;
+            key_idx = 0;
+            menu_state = ST_KEYS;
+        } else if (grp_cur == CELL_CLEAR) {
+            if (edit_len > 0) {
+                edit_len--;
+            }
+        } else if (grp_cur == CELL_SAVE) {
+            if (edit_len > 0) {
+                seq_len[edit_target] = edit_len;
+                memcpy(seq[edit_target], edit_items, (size_t)edit_len * sizeof(uint32_t));
+                sr->idx = edit_target;
+                sr->len = edit_len;
+                memcpy(sr->items, edit_items, (size_t)edit_len * sizeof(uint32_t));
+                menu_state = ST_PICK;
+                edit_target = -1;
+                edit_len = 0;
+                set_msg(PROG_MSG_SAVED);
+            }
+        } else if (grp_cur == CELL_CANCEL) {
+            menu_state = ST_PICK;
+            edit_target = -1;
+            edit_len = 0;
+            set_msg(PROG_MSG_CANCELLED);
+        }
+        /* MED, MOD and DELAY do nothing yet */
+    }
+}
+
+static void keys_event(uint32_t ev) {
+    int g = cur_group;
+    int pages = page_count(g);
+    int cells = cells_on_page(g, key_page);
+
+    if (ev == EV_NEXT) {
+        if (key_idx < cells - 1) {
+            key_idx++;
+        } else if (key_page < pages - 1) {
+            key_page++;
+            key_idx = 0;
+        }
+    } else if (ev == EV_PREV) {
+        if (key_idx > 0) {
+            key_idx--;
+        } else if (key_page > 0) {
+            key_page--;
+            key_idx = cells_on_page(g, key_page) - 1;
+        } else {
+            key_page = pages - 1;
+            key_idx = cells_on_page(g, key_page) - 1;
+        }
+    } else if (ev == EV_CONFIRM) {
+        if (key_idx == cells - 1) {
+            menu_state = ST_GROUPS;
+        } else {
+            const struct key_entry *e = group_item(g, key_page * per_page(g) + key_idx);
+            if (e != NULL) {
+                if (edit_len >= PROG_SEQ_MAX) {
+                    set_msg(PROG_MSG_FULL);
                 } else {
-                    menu_group = menu_pos - 2;
-                    menu_state = 2;
-                    int k = group_pos_of_code(menu_group, first_code(menu_target));
-                    menu_pos = (k >= 0) ? k + 1 : 1;
-                }
-            } else {
-                if (menu_pos == 0) {
-                    menu_state = 1;
-                    menu_pos = menu_group + 2;
-                } else {
-                    const struct key_entry *e = group_item(menu_group, menu_pos - 1);
-                    if (e != NULL) {
-                        seq[menu_target][0] = e->code;
-                        seq_len[menu_target] = 1;
-                        save_idx = menu_target;
-                        save_len = 1;
-                        save_items[0] = e->code;
-                        menu_state = 0;
-                        menu_target = -1;
-                        menu_saved = true;
-                    }
+                    edit_items[edit_len++] = e->code;
                 }
             }
+            menu_state = ST_GROUPS;
         }
+    }
+}
+
+void prog_menu_event(uint32_t ev) {
+    struct save_req sr;
+    sr.idx = -1;
+    sr.len = 0;
+
+    k_mutex_lock(&prog_lock, K_FOREVER);
+    if (menu_state == ST_PICK) {
+        pick_event(ev);
+    } else if (menu_state == ST_GROUPS) {
+        groups_event(ev, &sr);
+    } else {
+        keys_event(ev);
     }
     version++;
     k_mutex_unlock(&prog_lock);
 
-    if (save_idx >= 0) {
-        save_seq(save_idx, save_items, save_len);
+    if (sr.idx >= 0) {
+        save_seq(sr.idx, sr.items, sr.len);
     }
 }
 
-void prog_get_view(struct prog_view *v) {
-    char nm[24];
-
-    k_mutex_lock(&prog_lock, K_FOREVER);
-    v->title[0] = '\0';
-    v->rows[0][0] = '\0';
-    v->rows[1][0] = '\0';
-    v->rows[2][0] = '\0';
-
-    if (menu_state == 0) {
-        snprintf(v->title, sizeof(v->title), "MENU");
-        snprintf(v->rows[1], sizeof(v->rows[1]), "Press key");
-        snprintf(v->rows[2], sizeof(v->rows[2]), "%s", menu_saved ? "Saved!" : "hold: exit");
-    } else {
-        int len = list_len();
-        if (menu_state == 1) {
-            snprintf(v->title, sizeof(v->title), "Key %d", menu_target + 1);
+static void build_seq(char *out, size_t n) {
+    size_t pos = 0;
+    out[0] = '\0';
+    for (int i = 0; i < edit_len; i++) {
+        char tmp[12];
+        uint32_t e = edit_items[i];
+        if (PROG_IS_DELAY(e)) {
+            snprintf(tmp, sizeof(tmp), "[%u]", (unsigned int)PROG_DELAY_MS(e));
         } else {
-            snprintf(v->title, sizeof(v->title), "Key %d: %s", menu_target + 1,
-                     group_names[menu_group]);
+            const char *l = key_label(e);
+            snprintf(tmp, sizeof(tmp), "%s", l ? l : "?");
         }
-        item_name((menu_pos + len - 1) % len, nm, sizeof(nm));
-        snprintf(v->rows[0], sizeof(v->rows[0]), "  %s", nm);
-        item_name(menu_pos, nm, sizeof(nm));
-        snprintf(v->rows[1], sizeof(v->rows[1]), "> %s", nm);
-        item_name((menu_pos + 1) % len, nm, sizeof(nm));
-        snprintf(v->rows[2], sizeof(v->rows[2]), "  %s", nm);
+        int w = snprintf(out + pos, n - pos, "%s%s", i ? " " : "", tmp);
+        if (w < 0 || (size_t)w >= n - pos) {
+            break;
+        }
+        pos += (size_t)w;
+    }
+}
+
+void prog_get_menu_view(struct prog_menu_view *v) {
+    k_mutex_lock(&prog_lock, K_FOREVER);
+    memset(v, 0, sizeof(*v));
+    v->mode = menu_state;
+    v->version = version;
+    v->msg_kind = (msg_kind != PROG_MSG_NONE && k_uptime_get() < msg_until) ? msg_kind
+                                                                          : PROG_MSG_NONE;
+    v->cols = 3;
+
+    if (menu_state == ST_PICK) {
+        snprintf(v->hint, sizeof(v->hint), "hold knob: exit");
+    } else if (menu_state == ST_GROUPS) {
+        snprintf(v->hint, sizeof(v->hint), "Turn:go Push:OK");
+        v->cells = GRID_CELLS;
+        v->cursor = (uint8_t)grp_cur;
+        for (int i = 0; i < GRID_CELLS; i++) {
+            snprintf(v->cell[i], sizeof(v->cell[i]), "%s", grid_names[i]);
+        }
+        build_seq(v->seq, sizeof(v->seq));
+    } else {
+        int g = cur_group;
+        int per = per_page(g);
+        int cells = cells_on_page(g, key_page);
+        snprintf(v->hint, sizeof(v->hint), "Turn:go Push:add");
+        v->cols = group_cols[g];
+        v->cells = (uint8_t)cells;
+        v->cursor = (uint8_t)key_idx;
+        for (int i = 0; i < cells - 1; i++) {
+            const struct key_entry *e = group_item(g, key_page * per + i);
+            snprintf(v->cell[i], sizeof(v->cell[i]), "%s", e ? e->name : "?");
+        }
+        snprintf(v->cell[cells - 1], sizeof(v->cell[cells - 1]), "%s",
+                 group_cols[g] >= 4 ? "BACK" : "<-");
+        build_seq(v->seq, sizeof(v->seq));
     }
     k_mutex_unlock(&prog_lock);
 }

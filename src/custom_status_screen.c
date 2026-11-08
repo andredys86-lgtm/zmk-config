@@ -26,12 +26,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #define SCR_W 128
 #define SCR_H 64
-#define MN_HINT_Y 0
-#define MN_LINE1_Y 10
-#define MN_GRID_Y 12
-#define MN_CELL_H 10
-#define MN_LINE2_Y 54
-#define MN_SEQ_Y 55
+#define MN_SEQ_Y 53
+#define MN_SEQ_H 11
 
 static lv_obj_t *batt_icon;
 static lv_obj_t *batt_pct;
@@ -47,7 +43,6 @@ static uint32_t tick;
 
 /* menu objects */
 static lv_obj_t *mn_root;
-static lv_obj_t *mn_hint;
 static lv_obj_t *mn_seq;
 static lv_obj_t *mn_center;
 static lv_obj_t *mn_msg;
@@ -55,7 +50,6 @@ static lv_obj_t *mn_cell[PROG_MENU_MAX_CELLS];
 static bool cell_sel[PROG_MENU_MAX_CELLS];
 
 static lv_style_t st_root;
-static lv_style_t st_line;
 static lv_style_t st_cell;
 static lv_style_t st_cell_sel;
 static lv_style_t st_txt;
@@ -153,12 +147,6 @@ static void init_styles(void) {
     lv_style_set_pad_all(&st_root, 0);
     lv_style_set_radius(&st_root, 0);
 
-    lv_style_init(&st_line);
-    lv_style_set_bg_opa(&st_line, LV_OPA_COVER);
-    lv_style_set_bg_color(&st_line, MN_FG);
-    lv_style_set_border_width(&st_line, 0);
-    lv_style_set_radius(&st_line, 0);
-
     lv_style_init(&st_cell);
     lv_style_set_bg_opa(&st_cell, LV_OPA_COVER);
     lv_style_set_bg_color(&st_cell, MN_BG);
@@ -167,7 +155,6 @@ static void init_styles(void) {
     lv_style_set_radius(&st_cell, 0);
     lv_style_set_pad_all(&st_cell, 0);
     lv_style_set_text_color(&st_cell, MN_FG);
-    lv_style_set_text_font(&st_cell, &lv_font_montserrat_8);
     lv_style_set_text_align(&st_cell, LV_TEXT_ALIGN_CENTER);
 
     lv_style_init(&st_cell_sel);
@@ -176,7 +163,7 @@ static void init_styles(void) {
 
     lv_style_init(&st_txt);
     lv_style_set_text_color(&st_txt, MN_FG);
-    lv_style_set_text_font(&st_txt, &lv_font_montserrat_8);
+    lv_style_set_text_font(&st_txt, &lv_font_montserrat_10);
 
     lv_style_init(&st_center);
     lv_style_set_text_color(&st_center, MN_FG);
@@ -193,15 +180,6 @@ static void init_styles(void) {
     lv_style_set_radius(&st_msg, 0);
 }
 
-static lv_obj_t *make_line(lv_obj_t *parent, int y) {
-    lv_obj_t *ln = lv_obj_create(parent);
-    lv_obj_remove_style_all(ln);
-    lv_obj_set_pos(ln, 0, y);
-    lv_obj_set_size(ln, SCR_W, 1);
-    lv_obj_add_style(ln, &st_line, LV_PART_MAIN);
-    return ln;
-}
-
 static void build_menu(lv_obj_t *screen) {
     init_styles();
 
@@ -212,22 +190,11 @@ static void build_menu(lv_obj_t *screen) {
     lv_obj_clear_flag(mn_root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_style(mn_root, &st_root, LV_PART_MAIN);
 
-    mn_hint = lv_label_create(mn_root);
-    lv_obj_remove_style_all(mn_hint);
-    lv_obj_add_style(mn_hint, &st_txt, LV_PART_MAIN);
-    lv_obj_set_style_text_align(mn_hint, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_label_set_long_mode(mn_hint, LV_LABEL_LONG_CLIP);
-    lv_obj_set_size(mn_hint, SCR_W, 10);
-    lv_obj_set_pos(mn_hint, 0, MN_HINT_Y);
-    lv_label_set_text(mn_hint, "");
-
-    make_line(mn_root, MN_LINE1_Y);
-    make_line(mn_root, MN_LINE2_Y);
-
     for (int i = 0; i < PROG_MENU_MAX_CELLS; i++) {
         lv_obj_t *c = lv_label_create(mn_root);
         lv_obj_remove_style_all(c);
         lv_obj_add_style(c, &st_cell, LV_PART_MAIN);
+        lv_obj_set_style_text_font(c, &lv_font_montserrat_10, LV_PART_MAIN);
         lv_label_set_long_mode(c, LV_LABEL_LONG_CLIP);
         lv_label_set_text(c, "");
         lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
@@ -239,7 +206,7 @@ static void build_menu(lv_obj_t *screen) {
     lv_obj_remove_style_all(mn_seq);
     lv_obj_add_style(mn_seq, &st_txt, LV_PART_MAIN);
     lv_label_set_long_mode(mn_seq, LV_LABEL_LONG_CLIP);
-    lv_obj_set_size(mn_seq, SCR_W, 9);
+    lv_obj_set_size(mn_seq, SCR_W, MN_SEQ_H);
     lv_obj_set_pos(mn_seq, 0, MN_SEQ_Y);
     lv_label_set_text(mn_seq, "");
 
@@ -248,7 +215,7 @@ static void build_menu(lv_obj_t *screen) {
     lv_obj_add_style(mn_center, &st_center, LV_PART_MAIN);
     lv_label_set_long_mode(mn_center, LV_LABEL_LONG_CLIP);
     lv_obj_set_size(mn_center, SCR_W, 18);
-    lv_obj_set_pos(mn_center, 0, 24);
+    lv_obj_set_pos(mn_center, 0, 22);
     lv_label_set_text(mn_center, "Press key");
     lv_obj_add_flag(mn_center, LV_OBJ_FLAG_HIDDEN);
 
@@ -265,7 +232,7 @@ static void build_menu(lv_obj_t *screen) {
 /* Shows the tail of the sequence that fits the row, with ".." when the
  * beginning is hidden. */
 static void seq_tail(const char *full, char *out, size_t n) {
-    const lv_font_t *f = &lv_font_montserrat_8;
+    const lv_font_t *f = &lv_font_montserrat_10;
 
     if (lv_txt_get_width(full, strlen(full), f, 0, 0) <= SCR_W - 1) {
         snprintf(out, n, "%s", full);
@@ -289,10 +256,10 @@ static void seq_tail(const char *full, char *out, size_t n) {
 static void menu_apply(const struct prog_menu_view *v) {
     static char tail[128];
 
-    lv_label_set_text(mn_hint, v->hint);
-
     int cols = v->cols > 0 ? v->cols : 3;
     int cw = 127 / cols;
+    int ch = (v->font == 14) ? 17 : 12;
+    const lv_font_t *font = (v->font == 14) ? &lv_font_montserrat_14 : &lv_font_montserrat_10;
 
     for (int i = 0; i < PROG_MENU_MAX_CELLS; i++) {
         lv_obj_t *c = mn_cell[i];
@@ -302,8 +269,9 @@ static void menu_apply(const struct prog_menu_view *v) {
         }
         int col = i % cols;
         int row = i / cols;
-        lv_obj_set_pos(c, col * cw, MN_GRID_Y + row * MN_CELL_H);
-        lv_obj_set_size(c, cw + 1, MN_CELL_H + 1);
+        lv_obj_set_pos(c, col * cw, row * ch);
+        lv_obj_set_size(c, cw + 1, ch + 1);
+        lv_obj_set_style_text_font(c, font, LV_PART_MAIN);
         lv_label_set_text(c, v->cell[i]);
         bool sel = (i == v->cursor);
         if (sel != cell_sel[i]) {

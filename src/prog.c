@@ -30,7 +30,6 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define CELL_CLEAR 9
 #define CELL_SAVE 10
 #define CELL_CANCEL 11
-#define KEY_ROWS 4
 
 enum { ST_PICK = 0, ST_GROUPS = 1, ST_KEYS = 2 };
 
@@ -100,7 +99,7 @@ static const struct key_entry *group_item(int g, int k) {
 }
 
 static int per_page(int g) {
-    return group_cols[g] * KEY_ROWS - 1;
+    return group_cols[g] * group_rows[g] - 1;
 }
 
 static int page_count(int g) {
@@ -437,23 +436,23 @@ void prog_get_menu_view(struct prog_menu_view *v) {
     v->msg_kind = (msg_kind != PROG_MSG_NONE && k_uptime_get() < msg_until) ? msg_kind
                                                                           : PROG_MSG_NONE;
     v->cols = 3;
+    v->rows = 4;
+    v->font = 10;
 
-    if (menu_state == ST_PICK) {
-        snprintf(v->hint, sizeof(v->hint), "hold knob: exit");
-    } else if (menu_state == ST_GROUPS) {
-        snprintf(v->hint, sizeof(v->hint), "Turn:go Push:OK");
+    if (menu_state == ST_GROUPS) {
         v->cells = GRID_CELLS;
         v->cursor = (uint8_t)grp_cur;
         for (int i = 0; i < GRID_CELLS; i++) {
             snprintf(v->cell[i], sizeof(v->cell[i]), "%s", grid_names[i]);
         }
         build_seq(v->seq, sizeof(v->seq));
-    } else {
+    } else if (menu_state == ST_KEYS) {
         int g = cur_group;
         int per = per_page(g);
         int cells = cells_on_page(g, key_page);
-        snprintf(v->hint, sizeof(v->hint), "Turn:go Push:add");
         v->cols = group_cols[g];
+        v->rows = group_rows[g];
+        v->font = group_font[g];
         v->cells = (uint8_t)cells;
         v->cursor = (uint8_t)key_idx;
         for (int i = 0; i < cells - 1; i++) {
@@ -461,7 +460,7 @@ void prog_get_menu_view(struct prog_menu_view *v) {
             snprintf(v->cell[i], sizeof(v->cell[i]), "%s", e ? e->name : "?");
         }
         snprintf(v->cell[cells - 1], sizeof(v->cell[cells - 1]), "%s",
-                 group_cols[g] >= 4 ? "BACK" : "<-");
+                 group_font[g] == 10 ? "BACK" : "<-");
         build_seq(v->seq, sizeof(v->seq));
     }
     k_mutex_unlock(&prog_lock);

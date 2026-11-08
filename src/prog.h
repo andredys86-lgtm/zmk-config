@@ -29,11 +29,12 @@
 struct prog_menu_view {
     uint8_t mode;
     uint8_t cols;
+    uint8_t rows;
+    uint8_t font; /* 10 or 14 */
     uint8_t cells;
     uint8_t cursor;
     uint8_t msg_kind;
     uint32_t version;
-    char hint[24];
     char cell[PROG_MENU_MAX_CELLS][8];
     char seq[112];
 };

@@ -2,6 +2,7 @@
 
 #define KB(id) (0x070000u | (id))
 #define SH(id) (0x070000u | (id) | (0x02u << 24))
+#define CONS(id) (0x0C0000u | (id))
 
 #define ABC(n, id) {n, KB(id), G_ABC}
 #define NUM(n, id) {n, KB(id), G_NUM}
@@ -10,15 +11,16 @@
 #define SYM(n, id) {n, KB(id), G_SYM}
 #define SHS(n, id) {n, SH(id), G_SYM}
 #define KPD(n, id) {n, KB(id), G_KP}
+#define MEDK(n, id) {n, CONS(id), G_MED}
 
 const char *const group_names[G_COUNT] = {
-    "ABC", "NUM", "F-F", "NAV", "SYM", "KP",
+    "ABC", "NUM", "F-F", "NAV", "SYM", "KP", "MED",
 };
 
 /* key page grid for every group: columns, rows per page and font size */
-const uint8_t group_cols[G_COUNT] = {6, 6, 4, 3, 6, 3};
-const uint8_t group_rows[G_COUNT] = {2, 2, 2, 3, 2, 3};
-const uint8_t group_font[G_COUNT] = {14, 14, 14, 10, 14, 10};
+const uint8_t group_cols[G_COUNT] = {6, 6, 4, 3, 6, 3, 3};
+const uint8_t group_rows[G_COUNT] = {2, 2, 2, 3, 2, 3, 3};
+const uint8_t group_font[G_COUNT] = {14, 14, 14, 10, 14, 10, 10};
 
 const struct key_entry key_list[] = {
     ABC("A", 0x04), ABC("B", 0x05), ABC("C", 0x06), ABC("D", 0x07), ABC("E", 0x08),
@@ -52,6 +54,11 @@ const struct key_entry key_list[] = {
     KPD("KP4", 0x5C), KPD("KP5", 0x5D), KPD("KP6", 0x5E), KPD("KP7", 0x5F),
     KPD("KP8", 0x60), KPD("KP9", 0x61), KPD("KP.", 0x63), KPD("KPEN", 0x58),
     KPD("KP+", 0x57), KPD("KP-", 0x56), KPD("KP*", 0x55), KPD("KP/", 0x54),
+
+    MEDK("PREV", 0xB6), MEDK("NEXT", 0xB5), MEDK("PLAY", 0xCD), MEDK("STOP", 0xB7),
+    MEDK("FF", 0xB3), MEDK("REW", 0xB4), MEDK("MUTE", 0xE2), MEDK("VOL+", 0xE9),
+    MEDK("VOL-", 0xEA), MEDK("BRI+", 0x6F), MEDK("BRI-", 0x70), MEDK("SLEEP", 0x32),
+    MEDK("SHUTDN", 0x30), MEDK("RESTART", 0x31),
 };
 
 const size_t key_list_len = sizeof(key_list) / sizeof(key_list[0]);

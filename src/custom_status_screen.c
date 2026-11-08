@@ -49,10 +49,12 @@ static lv_obj_t *mn_center;
 static lv_obj_t *mn_msg;
 static lv_obj_t *mn_cell[PROG_MENU_MAX_CELLS];
 static bool cell_sel[PROG_MENU_MAX_CELLS];
+static bool cell_hl[PROG_MENU_MAX_CELLS];
 
 static lv_style_t st_root;
 static lv_style_t st_cell;
 static lv_style_t st_cell_sel;
+static lv_style_t st_cell_hl;
 static lv_style_t st_txt;
 static lv_style_t st_center;
 static lv_style_t st_msg;
@@ -162,6 +164,9 @@ static void init_styles(void) {
     lv_style_set_bg_color(&st_cell_sel, MN_FG);
     lv_style_set_text_color(&st_cell_sel, MN_BG);
 
+    lv_style_init(&st_cell_hl);
+    lv_style_set_border_width(&st_cell_hl, 2);
+
     lv_style_init(&st_txt);
     lv_style_set_text_color(&st_txt, MN_FG);
     lv_style_set_text_font(&st_txt, &lv_font_montserrat_14);
@@ -201,6 +206,7 @@ static void build_menu(lv_obj_t *screen) {
         lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
         mn_cell[i] = c;
         cell_sel[i] = false;
+        cell_hl[i] = false;
     }
 
     mn_seq = lv_label_create(mn_root);
@@ -255,7 +261,7 @@ static void seq_tail(const char *full, char *out, size_t n) {
 }
 
 static void menu_apply(const struct prog_menu_view *v) {
-    static char tail[128];
+    static char tail[208];
 
     int cols = v->cols > 0 ? v->cols : 3;
     int rows = v->rows > 0 ? v->rows : 4;
@@ -286,6 +292,15 @@ static void menu_apply(const struct prog_menu_view *v) {
                 lv_obj_remove_style(c, &st_cell_sel, LV_PART_MAIN);
             }
             cell_sel[i] = sel;
+        }
+        bool hl = ((v->hl_mask >> i) & 1u) != 0;
+        if (hl != cell_hl[i]) {
+            if (hl) {
+                lv_obj_add_style(c, &st_cell_hl, LV_PART_MAIN);
+            } else {
+                lv_obj_remove_style(c, &st_cell_hl, LV_PART_MAIN);
+            }
+            cell_hl[i] = hl;
         }
         set_hidden(c, false);
     }

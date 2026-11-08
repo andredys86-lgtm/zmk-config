@@ -27,14 +27,28 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define MSG_MS 800
 
 #define GRID_CELLS 12
+#define CELL_MOD 7
 #define CELL_CLEAR 9
 #define CELL_SAVE 10
 #define CELL_CANCEL 11
 
-enum { ST_PICK = 0, ST_GROUPS = 1, ST_KEYS = 2 };
+#define MOD_CELLS 6
+#define MOD_CLR_CELL 4
+#define MOD_BACK_CELL 5
+
+#define UNDO_MAX 64
+#define MEDIA_PAGE 0x0Cu
+#define MARKER "\xE2\x80\xA2"
+
+enum { ST_PICK = 0, ST_GROUPS = 1, ST_KEYS = 2, ST_MODS = 3 };
+enum { U_ITEM = 0, U_MODON = 1, U_MARK = 2 };
 
 static const char *const grid_names[GRID_CELLS] = {
     "ABC", "NUM", "F-F", "NAV", "SYM", "KP", "MED", "MOD", "DELAY", "CLEAR", "SAVE", "CANCEL",
+};
+
+static const char *const mod_names[MOD_CELLS] = {
+    "CTRL", "SHIFT", "ALT", "GUI", "M.CLR", "BACK",
 };
 
 static K_MUTEX_DEFINE(prog_lock);
@@ -53,9 +67,22 @@ static int grp_cur;
 static int cur_group;
 static int key_page;
 static int key_idx;
+static int mod_cur;
+static uint8_t mods; /* active modifiers: 1 = C, 2 = S, 4 = A, 8 = G */
 static uint8_t msg_kind;
 static int64_t msg_until;
 static uint32_t version;
+
+/* Edit history, in the order things were done. U_ITEM stands for the next
+ * element of edit_items, U_MODON for a modifier that was switched on (bit in
+ * the low nibble, 0x10 = all modifiers were off before), U_MARK for a
+ * "modifiers cleared" marker (the previous mask in the low nibble). */
+struct undo {
+    uint8_t type;
+    uint8_t val;
+};
+static struct undo ustack[UNDO_MAX];
+static int ucount;
 
 /* Playback state */
 static struct {
@@ -74,6 +101,8 @@ struct save_req {
     uint8_t len;
     uint32_t items[PROG_SEQ_MAX];
 };
+
+/* ---------- key groups ---------- */
 
 static int group_count(int g) {
     int c = 0;
@@ -126,6 +155,186 @@ static void set_msg(uint8_t kind) {
     msg_until = k_uptime_get() + MSG_MS;
 }
 
+/* ---------- editing helpers ---------- */
+
+static bool is_media_code(uint32_t c) {
+    return !PROG_IS_DELAY(c) && (((c >> 16) & 0xFFu) == MEDIA_PAGE);
+}
+
+static bool has_media(void) {
+    for (int i = 0; i < edit_len; i++) {
+        if (is_media_code(edit_items[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool has_normal(void) {
+    for (int i = 0; i < edit_len; i++) {
+        uint32_t c = edit_items[i];
+        if (!PROG_IS_DELAY(c) && !is_media_code(c)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void upush(uint8_t type, uint8_t val) {
+    if (ucount < UNDO_MAX) {
+        ustack[ucount].type = type;
+        ustack[ucount].val = val;
+        ucount++;
+    }
+}
+
+static void reset_edit(void) {
+    edit_len = 0;
+    ucount = 0;
+    mods = 0;
+}
+
+/* true when the currently active modifiers were already applied to a key */
+static bool mods_used(void) {
+    int idx = (int)edit_len - 1;
+
+    if (mods == 0) {
+        return false;
+    }
+    for (int i = ucount - 1; i >= 0; i--) {
+        const struct undo *u = &ustack[i];
+        if (u->type == U_MARK) {
+            return false;
+        }
+        if (u->type == U_MODON && (u->val & 0x10)) {
+            return false;
+        }
+        if (u->type == U_ITEM) {
+            if (idx >= 0) {
+                uint32_t c = edit_items[idx];
+                if (!PROG_IS_DELAY(c) && ((c >> 24) & 0x0F) != 0) {
+                    return true;
+                }
+            }
+            idx--;
+        }
+    }
+    return false;
+}
+
+static void do_clear(void) {
+    while (ucount > 0) {
+        struct undo u = ustack[--ucount];
+        if (u.type == U_ITEM) {
+            if (edit_len > 0) {
+                edit_len--;
+            }
+            return;
+        }
+        if (u.type == U_MARK) {
+            mods = u.val & 0x0F;
+            return;
+        }
+        uint8_t bit = u.val & 0x0F;
+        if (mods & bit) {
+            mods &= (uint8_t)~bit;
+            return;
+        }
+        /* that modifier is already off: nothing to undo, look further back */
+    }
+}
+
+static void mods_text(uint8_t m, char *out) {
+    int p = 0;
+    if (m & 1) {
+        out[p++] = 'C';
+    }
+    if (m & 2) {
+        out[p++] = 'S';
+    }
+    if (m & 4) {
+        out[p++] = 'A';
+    }
+    if (m & 8) {
+        out[p++] = 'G';
+    }
+    out[p] = '\0';
+}
+
+static uint8_t popcount4(uint8_t m) {
+    return (uint8_t)((m & 1) + ((m >> 1) & 1) + ((m >> 2) & 1) + ((m >> 3) & 1));
+}
+
+static void item_text(uint32_t code, char *out, size_t n) {
+    if (PROG_IS_DELAY(code)) {
+        snprintf(out, n, "[%u]", (unsigned int)PROG_DELAY_MS(code));
+        return;
+    }
+
+    uint8_t m = (code >> 24) & 0x0F;
+    uint32_t base = code & 0x00FFFFFFu;
+    const struct key_entry *best = NULL;
+    uint8_t best_impl = 0;
+
+    for (size_t i = 0; i < key_list_len; i++) {
+        uint32_t ec = key_list[i].code;
+        if ((ec & 0x00FFFFFFu) != base) {
+            continue;
+        }
+        uint8_t impl = (ec >> 24) & 0x0F;
+        if ((impl & m) != impl) {
+            continue;
+        }
+        if (best == NULL || popcount4(impl) > popcount4(best_impl)) {
+            best = &key_list[i];
+            best_impl = impl;
+        }
+    }
+
+    uint8_t expl = (uint8_t)(m & ~best_impl);
+    char pre[8];
+    mods_text(expl, pre);
+    if (pre[0] != '\0') {
+        snprintf(out, n, "%s:%s", pre, best ? best->name : "?");
+    } else {
+        snprintf(out, n, "%s", best ? best->name : "?");
+    }
+}
+
+static void append_tok(char *out, size_t n, size_t *pos, const char *tok) {
+    int w = snprintf(out + *pos, n - *pos, "%s%s", *pos ? " " : "", tok);
+    if (w > 0 && (size_t)w < n - *pos) {
+        *pos += (size_t)w;
+    }
+}
+
+static void build_seq(char *out, size_t n) {
+    size_t pos = 0;
+    int idx = 0;
+    char tmp[24];
+
+    out[0] = '\0';
+    for (int i = 0; i < ucount; i++) {
+        if (ustack[i].type == U_ITEM) {
+            if (idx < edit_len) {
+                item_text(edit_items[idx], tmp, sizeof(tmp));
+                idx++;
+                append_tok(out, n, &pos, tmp);
+            }
+        } else if (ustack[i].type == U_MARK) {
+            append_tok(out, n, &pos, MARKER);
+        }
+    }
+    if (mods != 0) {
+        char pre[8];
+        mods_text(mods, pre);
+        snprintf(tmp, sizeof(tmp), "%s:", pre);
+        append_tok(out, n, &pos, tmp);
+    }
+}
+
+/* ---------- storage ---------- */
+
 static void save_seq(int idx, const uint32_t *items, uint8_t len) {
     char name[16];
     int rc;
@@ -155,8 +364,11 @@ static int np16_set(const char *name, size_t len, settings_read_cb read_cb, void
         if (end == name + 1 || *end != '\0' || idx < 0 || idx >= PROG_KEYS) {
             return -ENOENT;
         }
-        if (len == 0 || (len % sizeof(uint32_t)) != 0 ||
-            (len / sizeof(uint32_t)) > PROG_SEQ_MAX) {
+        if (len == 0) {
+            seq_len[idx] = 0;
+            return 0;
+        }
+        if ((len % sizeof(uint32_t)) != 0 || (len / sizeof(uint32_t)) > PROG_SEQ_MAX) {
             return -EINVAL;
         }
         uint32_t tmp[PROG_SEQ_MAX];
@@ -172,6 +384,8 @@ static int np16_set(const char *name, size_t len, settings_read_cb read_cb, void
 }
 
 SETTINGS_STATIC_HANDLER_DEFINE(np16, "np16", NULL, np16_set, NULL, NULL);
+
+/* ---------- playback ---------- */
 
 static void play_step(struct k_work *work) {
     bool do_press = false;
@@ -283,11 +497,12 @@ static int prog_layer_listener(const zmk_event_t *eh) {
         k_mutex_lock(&prog_lock, K_FOREVER);
         menu_state = ST_PICK;
         edit_target = -1;
-        edit_len = 0;
+        reset_edit();
         grp_cur = 0;
         cur_group = 0;
         key_page = 0;
         key_idx = 0;
+        mod_cur = 0;
         msg_kind = PROG_MSG_NONE;
         version++;
         k_mutex_unlock(&prog_lock);
@@ -298,12 +513,18 @@ static int prog_layer_listener(const zmk_event_t *eh) {
 ZMK_LISTENER(prog_layer, prog_layer_listener);
 ZMK_SUBSCRIPTION(prog_layer, zmk_layer_state_changed);
 
+/* ---------- menu events ---------- */
+
 static void pick_event(uint32_t ev) {
     if (ev < MATRIX_KEYS) {
         edit_target = (int)ev;
+        reset_edit();
         edit_len = seq_len[ev];
         if (edit_len > 0) {
             memcpy(edit_items, seq[ev], (size_t)edit_len * sizeof(uint32_t));
+        }
+        for (int i = 0; i < edit_len; i++) {
+            upush(U_ITEM, 0);
         }
         grp_cur = 0;
         msg_kind = PROG_MSG_NONE;
@@ -322,10 +543,11 @@ static void groups_event(uint32_t ev, struct save_req *sr) {
             key_page = 0;
             key_idx = 0;
             menu_state = ST_KEYS;
+        } else if (grp_cur == CELL_MOD) {
+            mod_cur = 0;
+            menu_state = ST_MODS;
         } else if (grp_cur == CELL_CLEAR) {
-            if (edit_len > 0) {
-                edit_len--;
-            }
+            do_clear();
         } else if (grp_cur == CELL_SAVE) {
             /* an empty sequence is saved too: it erases the assignment */
             seq_len[edit_target] = edit_len;
@@ -337,15 +559,15 @@ static void groups_event(uint32_t ev, struct save_req *sr) {
             sr->len = edit_len;
             menu_state = ST_PICK;
             edit_target = -1;
-            edit_len = 0;
+            reset_edit();
             set_msg(PROG_MSG_SAVED);
         } else if (grp_cur == CELL_CANCEL) {
             menu_state = ST_PICK;
             edit_target = -1;
-            edit_len = 0;
+            reset_edit();
             set_msg(PROG_MSG_CANCELLED);
         }
-        /* MED, MOD and DELAY do nothing yet */
+        /* DELAY does nothing yet */
     }
 }
 
@@ -377,12 +599,57 @@ static void keys_event(uint32_t ev) {
         } else {
             const struct key_entry *e = group_item(g, key_page * per_page(g) + key_idx);
             if (e != NULL) {
-                if (edit_len >= PROG_SEQ_MAX) {
-                    set_msg(PROG_MSG_FULL);
-                } else {
-                    edit_items[edit_len++] = e->code;
+                bool media = (e->group == G_MED);
+                /* a media command cannot be combined with other keys or modifiers */
+                bool reject = media ? (mods != 0 || has_normal()) : has_media();
+                if (!reject) {
+                    if (edit_len >= PROG_SEQ_MAX || ucount >= UNDO_MAX) {
+                        set_msg(PROG_MSG_FULL);
+                    } else {
+                        uint32_t code = e->code;
+                        if (!media) {
+                            code |= ((uint32_t)mods << 24);
+                        }
+                        edit_items[edit_len++] = code;
+                        upush(U_ITEM, 0);
+                    }
                 }
             }
+            menu_state = ST_GROUPS;
+        }
+    }
+}
+
+static void mods_event(uint32_t ev) {
+    if (ev == EV_NEXT) {
+        mod_cur = (mod_cur + 1) % MOD_CELLS;
+    } else if (ev == EV_PREV) {
+        mod_cur = (mod_cur + MOD_CELLS - 1) % MOD_CELLS;
+    } else if (ev == EV_CONFIRM) {
+        if (mod_cur < 4) {
+            uint8_t bit = (uint8_t)(1u << mod_cur);
+            if (mods & bit) {
+                mods &= (uint8_t)~bit;
+                /* switched on and off again with nothing in between: no trace */
+                if (ucount > 0 && ustack[ucount - 1].type == U_MODON &&
+                    (ustack[ucount - 1].val & 0x0F) == bit) {
+                    ucount--;
+                }
+            } else if (!has_media()) {
+                uint8_t flag = (mods == 0) ? 0x10 : 0x00;
+                mods |= bit;
+                upush(U_MODON, (uint8_t)(bit | flag));
+            }
+            menu_state = ST_GROUPS;
+        } else if (mod_cur == MOD_CLR_CELL) {
+            if (mods != 0) {
+                if (mods_used()) {
+                    upush(U_MARK, mods);
+                }
+                mods = 0;
+            }
+            menu_state = ST_GROUPS;
+        } else {
             menu_state = ST_GROUPS;
         }
     }
@@ -398,34 +665,16 @@ void prog_menu_event(uint32_t ev) {
         pick_event(ev);
     } else if (menu_state == ST_GROUPS) {
         groups_event(ev, &sr);
-    } else {
+    } else if (menu_state == ST_KEYS) {
         keys_event(ev);
+    } else {
+        mods_event(ev);
     }
     version++;
     k_mutex_unlock(&prog_lock);
 
     if (sr.idx >= 0) {
         save_seq(sr.idx, sr.items, sr.len);
-    }
-}
-
-static void build_seq(char *out, size_t n) {
-    size_t pos = 0;
-    out[0] = '\0';
-    for (int i = 0; i < edit_len; i++) {
-        char tmp[12];
-        uint32_t e = edit_items[i];
-        if (PROG_IS_DELAY(e)) {
-            snprintf(tmp, sizeof(tmp), "[%u]", (unsigned int)PROG_DELAY_MS(e));
-        } else {
-            const char *l = key_label(e);
-            snprintf(tmp, sizeof(tmp), "%s", l ? l : "?");
-        }
-        int w = snprintf(out + pos, n - pos, "%s%s", i ? " " : "", tmp);
-        if (w < 0 || (size_t)w >= n - pos) {
-            break;
-        }
-        pos += (size_t)w;
     }
 }
 
@@ -446,6 +695,7 @@ void prog_get_menu_view(struct prog_menu_view *v) {
         for (int i = 0; i < GRID_CELLS; i++) {
             snprintf(v->cell[i], sizeof(v->cell[i]), "%s", grid_names[i]);
         }
+        v->hl_mask = (mods != 0) ? (1u << CELL_MOD) : 0u;
         build_seq(v->seq, sizeof(v->seq));
     } else if (menu_state == ST_KEYS) {
         int g = cur_group;
@@ -462,6 +712,17 @@ void prog_get_menu_view(struct prog_menu_view *v) {
         }
         snprintf(v->cell[cells - 1], sizeof(v->cell[cells - 1]), "%s",
                  group_font[g] == 10 ? "BACK" : "<-");
+        build_seq(v->seq, sizeof(v->seq));
+    } else if (menu_state == ST_MODS) {
+        v->cols = 3;
+        v->rows = 2;
+        v->font = 10;
+        v->cells = MOD_CELLS;
+        v->cursor = (uint8_t)mod_cur;
+        for (int i = 0; i < MOD_CELLS; i++) {
+            snprintf(v->cell[i], sizeof(v->cell[i]), "%s", mod_names[i]);
+        }
+        v->hl_mask = (uint32_t)(mods & 0x0F);
         build_seq(v->seq, sizeof(v->seq));
     }
     k_mutex_unlock(&prog_lock);

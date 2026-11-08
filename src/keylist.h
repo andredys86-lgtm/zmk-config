@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* key groups: values 0..G_COUNT-1 are also the first cells of the group grid */
 enum key_group {
     G_ABC,
     G_NUM,
@@ -10,6 +11,7 @@ enum key_group {
     G_NAV,
     G_SYM,
     G_KP,
+    G_MED,
     G_COUNT
 };
 

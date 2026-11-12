@@ -8,6 +8,9 @@
 #define CALC_DIV 14
 #define CALC_EQ 15
 #define CALC_CLR 16
+#define CALC_CW 17
+#define CALC_CCW 18
+#define CALC_MENU 19
 
 / {
     behaviors {
@@ -45,6 +48,14 @@
             bindings = <&to>, <&menu>;
         };
 
+        ht_calc: ht_calc {
+            compatible = "zmk,behavior-hold-tap";
+            #binding-cells = <2>;
+            flavor = "tap-preferred";
+            tapping-term-ms = <600>;
+            bindings = <&calc>, <&calc>;
+        };
+
         enc_l0: enc_l0 {
             compatible = "zmk,behavior-sensor-rotate";
             #sensor-binding-cells = <0>;
@@ -54,7 +65,7 @@
         enc_l1: enc_l1 {
             compatible = "zmk,behavior-sensor-rotate";
             #sensor-binding-cells = <0>;
-            bindings = <&to 2>, <&to 0>;
+            bindings = <&calc CALC_CW>, <&calc CALC_CCW>;
         };
 
         enc_l2: enc_l2 {
@@ -91,7 +102,7 @@
                 &calc 4  &calc 5         &calc 6         &calc CALC_SUB
                 &calc 1  &calc 2         &calc 3         &calc CALC_ADD
                 &calc 0  &calc CALC_MUL  &calc CALC_DOT  &calc CALC_EQ
-                &calc CALC_CLR
+                &ht_calc CALC_CLR CALC_MENU
             >;
 
             sensor-bindings = <&enc_l1>;

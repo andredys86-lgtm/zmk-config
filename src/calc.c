@@ -13,6 +13,9 @@
 #define KEY_DIV 14
 #define KEY_EQ 15
 #define KEY_CLR 16
+#define KEY_ENC_CW 17
+#define KEY_ENC_CCW 18
+#define KEY_MENU 19
 #define KEY_SQRT 20
 #define KEY_POW 21
 #define KEY_PI 22
@@ -26,6 +29,7 @@
 #define MAX_PAREN 2
 #define MAX_POW 2
 #define PI_VAL 3.14159265358979323846
+#define MENU_TIMEOUT_MS 10000
 
 /*
  * The expression is a string of atoms:
@@ -48,6 +52,14 @@ static char interm[32] = "0";
 static char disp_scratch[CALC_DISP_SZ];
 static uint32_t version;
 static uint32_t last_input;
+
+static bool menu_open;
+static int menu_sel;
+static uint32_t menu_ts;
+
+/* Menu cells: sqrt, power, pi, percent, +/-, (, ), backspace, AC, exit (0 = exit). */
+static const uint8_t menu_code[CALC_MENU_CELLS] = {KEY_SQRT,  KEY_POW,   KEY_PI, KEY_PCT, KEY_SIGN,
+                                                   KEY_OPEN,  KEY_CLOSE, KEY_BS, KEY_CLR, 0};
 
 __weak bool calc_layout_fits(const char *disp) {
     (void)disp;
@@ -947,66 +959,133 @@ static void press_bs(void) {
     len--;
 }
 
-void calc_key(uint8_t k) {
-    k_mutex_lock(&calc_lock, K_FOREVER);
-    last_input = k_uptime_get_32();
+/* Runs one expression key (digits, operators and functions). */
+static void run_key(uint8_t k) {
     if (k == KEY_CLR) {
         reset_all();
-    } else if (!(full && k != KEY_BS)) {
-        if (k <= 9) {
-            press_digit(k);
-        } else {
-            switch (k) {
-            case KEY_DOT:
-                press_dot();
-                break;
-            case KEY_ADD:
-                press_op('+');
-                break;
-            case KEY_SUB:
-                press_op('-');
-                break;
-            case KEY_MUL:
-                press_op('*');
-                break;
-            case KEY_DIV:
-                press_op('/');
-                break;
-            case KEY_EQ:
-                press_eq();
-                break;
-            case KEY_SQRT:
-                press_sqrt();
-                break;
-            case KEY_POW:
-                press_pow();
-                break;
-            case KEY_PI:
-                press_pi();
-                break;
-            case KEY_PCT:
-                press_pct();
-                break;
-            case KEY_SIGN:
-                press_sign();
-                break;
-            case KEY_OPEN:
-                press_open();
-                break;
-            case KEY_CLOSE:
-                press_close();
-                break;
-            case KEY_BS:
-                press_bs();
-                break;
-            default:
-                break;
+        return;
+    }
+    if (full && k != KEY_BS) {
+        return;
+    }
+    if (k <= 9) {
+        press_digit(k);
+        return;
+    }
+    switch (k) {
+    case KEY_DOT:
+        press_dot();
+        break;
+    case KEY_ADD:
+        press_op('+');
+        break;
+    case KEY_SUB:
+        press_op('-');
+        break;
+    case KEY_MUL:
+        press_op('*');
+        break;
+    case KEY_DIV:
+        press_op('/');
+        break;
+    case KEY_EQ:
+        press_eq();
+        break;
+    case KEY_SQRT:
+        press_sqrt();
+        break;
+    case KEY_POW:
+        press_pow();
+        break;
+    case KEY_PI:
+        press_pi();
+        break;
+    case KEY_PCT:
+        press_pct();
+        break;
+    case KEY_SIGN:
+        press_sign();
+        break;
+    case KEY_OPEN:
+        press_open();
+        break;
+    case KEY_CLOSE:
+        press_close();
+        break;
+    case KEY_BS:
+        press_bs();
+        break;
+    default:
+        break;
+    }
+}
+
+/* Confirms the selected menu cell. */
+static void menu_exec(void) {
+    if (menu_sel >= CALC_MENU_CELLS - 1) {
+        menu_open = false;
+        return;
+    }
+    uint8_t k = menu_code[menu_sel];
+    if (k == KEY_CLR) {
+        reset_all();
+        menu_open = false;
+        menu_sel = 0;
+        return;
+    }
+    if (full && k != KEY_BS) {
+        return;
+    }
+    bool was_err = err;
+    bool blocked = err || full;
+    run_key(k);
+    recompute();
+    if (k == KEY_BS && blocked && (err || full)) {
+        return;
+    }
+    if (was_err && !err) {
+        menu_sel = 0;
+    }
+    menu_open = false;
+}
+
+int calc_key(uint8_t k) {
+    int layer = -1;
+    k_mutex_lock(&calc_lock, K_FOREVER);
+    uint32_t now = k_uptime_get_32();
+    if (k == KEY_ENC_CW || k == KEY_ENC_CCW) {
+        if (menu_open) {
+            if (k == KEY_ENC_CW) {
+                menu_sel = (menu_sel + 1) % CALC_MENU_CELLS;
+            } else {
+                menu_sel = (menu_sel + CALC_MENU_CELLS - 1) % CALC_MENU_CELLS;
             }
+            menu_ts = now;
+        } else {
+            layer = (k == KEY_ENC_CW) ? 2 : 0;
+        }
+    } else if (k == KEY_MENU) {
+        if (!menu_open) {
+            menu_open = true;
+            menu_ts = now;
+        } else {
+            last_input = now;
+            menu_exec();
+        }
+    } else {
+        last_input = now;
+        run_key(k);
+        if (k == KEY_CLR) {
+            menu_open = false;
+            menu_sel = 0;
+        } else if (k == KEY_EQ && done) {
+            menu_open = false;
         }
     }
     recompute();
     version++;
     k_mutex_unlock(&calc_lock);
+    return layer;
 }
 
 uint32_t calc_version(void) {
@@ -1015,6 +1094,10 @@ uint32_t calc_version(void) {
 
 void calc_get_view(struct calc_view *v) {
     k_mutex_lock(&calc_lock, K_FOREVER);
+    uint32_t now = k_uptime_get_32();
+    if (menu_open && (now - menu_ts) >= MENU_TIMEOUT_MS) {
+        menu_open = false;
+    }
     build_disp(buf, len, v->disp, sizeof(v->disp));
     if (err) {
         snprintf(v->res, sizeof(v->res), "ERROR");
@@ -1025,8 +1108,10 @@ void calc_get_view(struct calc_view *v) {
     } else {
         snprintf(v->res, sizeof(v->res), "%s", interm);
     }
-    uint32_t idle = k_uptime_get_32() - last_input;
+    uint32_t idle = now - last_input;
     bool phase = (idle >= 5000) || (((idle / 500) % 2) == 0);
     v->cursor = !done && !err && !full && phase;
+    v->menu_open = menu_open;
+    v->menu_sel = menu_sel;
     k_mutex_unlock(&calc_lock);
 }

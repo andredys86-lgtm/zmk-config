@@ -35,6 +35,13 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define EXPR_W 124
 #define RES_W 118
 
+/* calculator function menu: 5 columns x 2 rows at the bottom */
+#define CM_COLS 5
+#define CM_X0 2
+#define CM_W 124
+#define CM_H 13
+#define CM_Y0 (SCR_H - 2 * CM_H - 1)
+
 static lv_obj_t *batt_icon;
 static lv_obj_t *batt_pct;
 static lv_obj_t *conn_icon;
@@ -55,6 +62,12 @@ static lv_obj_t *mn_msg;
 static lv_obj_t *mn_cell[PROG_MENU_MAX_CELLS];
 static bool cell_sel[PROG_MENU_MAX_CELLS];
 static bool cell_hl[PROG_MENU_MAX_CELLS];
+
+/* calculator menu objects */
+static const char *const cm_label[CALC_MENU_CELLS] = {"SQ", "X^Y", "PI", "%", "+/-",
+                                                      "(",  ")",   "DEL", "AC", "EXIT"};
+static lv_obj_t *cm_cell[CALC_MENU_CELLS];
+static bool cm_sel[CALC_MENU_CELLS];
 
 static lv_style_t st_root;
 static lv_style_t st_cell;
@@ -259,6 +272,24 @@ bool calc_result_fits(const char *res) {
     return lv_txt_get_width(res, strlen(res), &lv_font_montserrat_10, 0, 0) <= RES_W;
 }
 
+static void cm_update(bool show, int sel) {
+    for (int i = 0; i < CALC_MENU_CELLS; i++) {
+        set_hidden(cm_cell[i], !show);
+        if (!show) {
+            continue;
+        }
+        bool s = (i == sel);
+        if (s != cm_sel[i]) {
+            if (s) {
+                lv_obj_add_style(cm_cell[i], &st_cell_sel, LV_PART_MAIN);
+            } else {
+                lv_obj_remove_style(cm_cell[i], &st_cell_sel, LV_PART_MAIN);
+            }
+            cm_sel[i] = s;
+        }
+    }
+}
+
 static void calc_view_apply(const struct calc_view *v) {
     int fi;
     int nl = 1;
@@ -284,7 +315,7 @@ static void calc_view_apply(const struct calc_view *v) {
     }
     lv_obj_set_style_text_font(calc_expr, font_by_idx(fi), LV_PART_MAIN);
     lv_label_set_text(calc_expr, expr_text);
-    lv_obj_set_pos(calc_expr, EXPR_X, nl >= 3 ? 0 : 6);
+    lv_obj_set_pos(calc_expr, EXPR_X, 0);
 
     int rf = 0;
     while (rf < 2 && lv_txt_get_width(v->res, strlen(v->res), font_by_idx(rf), 0, 0) > RES_W) {
@@ -294,6 +325,9 @@ static void calc_view_apply(const struct calc_view *v) {
     lv_obj_set_style_text_font(calc_res, f, LV_PART_MAIN);
     lv_label_set_text(calc_res, v->res);
     lv_obj_set_pos(calc_res, 0, SCR_H - 6 - lv_font_get_line_height(f));
+
+    set_hidden(calc_res, v->menu_open);
+    cm_update(v->menu_open, v->menu_sel);
 }
 
 /* ---------- menu ---------- */
@@ -389,6 +423,28 @@ static void build_menu(lv_obj_t *screen) {
     lv_obj_add_flag(mn_msg, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_add_flag(mn_root, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* Calculator function menu cells (created after init_styles). */
+static void build_calc_menu(lv_obj_t *screen) {
+    for (int i = 0; i < CALC_MENU_CELLS; i++) {
+        int col = i % CM_COLS;
+        int row = i / CM_COLS;
+        int x1 = CM_X0 + (col * CM_W) / CM_COLS;
+        int x2 = CM_X0 + ((col + 1) * CM_W) / CM_COLS;
+
+        lv_obj_t *c = lv_label_create(screen);
+        lv_obj_remove_style_all(c);
+        lv_obj_add_style(c, &st_cell, LV_PART_MAIN);
+        lv_obj_set_style_text_font(c, &lv_font_montserrat_10, LV_PART_MAIN);
+        lv_label_set_long_mode(c, LV_LABEL_LONG_CLIP);
+        lv_label_set_text(c, cm_label[i]);
+        lv_obj_set_pos(c, x1, CM_Y0 + row * CM_H);
+        lv_obj_set_size(c, x2 - x1 + 1, CM_H + 1);
+        lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
+        cm_cell[i] = c;
+        cm_sel[i] = false;
+    }
 }
 
 /* Shows the tail of the sequence that fits the row, with ".." when the
@@ -504,6 +560,7 @@ static void refresh_cb(lv_timer_t *timer) {
         if (in_menu) {
             set_hidden(calc_expr, true);
             set_hidden(calc_res, true);
+            cm_update(false, 0);
             set_hidden(info_t, true);
             set_hidden(info_a, true);
             set_hidden(info_b, true);
@@ -523,6 +580,9 @@ static void refresh_cb(lv_timer_t *timer) {
         set_hidden(calc_expr, !on_calc);
         set_hidden(calc_res, !on_calc);
         set_bar_hidden(on_calc);
+        if (!on_calc) {
+            cm_update(false, 0);
+        }
         last_calc_shown = on_calc;
         calc_force = true;
         if (!on_calc) {
@@ -572,7 +632,8 @@ static void refresh_cb(lv_timer_t *timer) {
     if (on_calc) {
         calc_get_view(&cv);
         if (calc_force || strcmp(cv.disp, last_cv.disp) != 0 || strcmp(cv.res, last_cv.res) != 0 ||
-            cv.cursor != last_cv.cursor) {
+            cv.cursor != last_cv.cursor || cv.menu_open != last_cv.menu_open ||
+            cv.menu_sel != last_cv.menu_sel) {
             calc_view_apply(&cv);
             last_cv = cv;
             calc_force = false;
@@ -615,7 +676,7 @@ lv_obj_t *zmk_display_status_screen() {
     lv_label_set_long_mode(calc_expr, LV_LABEL_LONG_CLIP);
     lv_obj_set_style_text_font(calc_expr, &lv_font_montserrat_20, LV_PART_MAIN);
     lv_label_set_text(calc_expr, "");
-    lv_obj_set_pos(calc_expr, EXPR_X, 6);
+    lv_obj_set_pos(calc_expr, EXPR_X, 0);
 
     calc_res = lv_label_create(screen);
     lv_obj_set_width(calc_res, RES_W);
@@ -631,6 +692,7 @@ lv_obj_t *zmk_display_status_screen() {
     info_c = make_info(screen, &lv_font_montserrat_14, 45);
 
     build_menu(screen);
+    build_calc_menu(screen);
 
     refresh_cb(NULL);
     lv_timer_create(refresh_cb, 100, NULL);

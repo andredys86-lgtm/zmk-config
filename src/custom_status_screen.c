@@ -30,12 +30,17 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define MN_SEQ_H 17
 #define MN_GRID_H 46
 
+/* calculator layout */
+#define EXPR_X 2
+#define EXPR_W 124
+#define RES_W 118
+
 static lv_obj_t *batt_icon;
 static lv_obj_t *batt_pct;
 static lv_obj_t *conn_icon;
 static lv_obj_t *layer_num;
-static lv_obj_t *calc_num;
-static lv_obj_t *calc_op;
+static lv_obj_t *calc_expr;
+static lv_obj_t *calc_res;
 static lv_obj_t *info_t;
 static lv_obj_t *info_a;
 static lv_obj_t *info_b;
@@ -72,10 +77,22 @@ static int last_usb = -1;
 static int last_layer = -1;
 static int last_hidden = -1;
 static int last_calc_shown = -1;
-static uint32_t last_calc_ver = 0xFFFFFFFF;
 static int last_prog_shown = -1;
 static int last_prog_layer = -1;
 static uint32_t last_prog_ver = 0xFFFFFFFF;
+
+/* calculator view cache */
+static struct calc_view cv;
+static struct calc_view last_cv;
+static bool calc_force = true;
+static char expr_text[CALC_DISP_SZ];
+
+/* scratch buffers for the layout code, protected by lay_lock */
+static K_MUTEX_DEFINE(lay_lock);
+static char lay_out[CALC_DISP_SZ];
+static char lay_test[400];
+static char lay_line[256];
+static char lay_chunk[128];
 
 static const char *battery_symbol(uint8_t level) {
     if (level > 85) {
@@ -135,10 +152,148 @@ static void invalidate_status_cache(void) {
     last_layer = -1;
     last_hidden = -1;
     last_calc_shown = -1;
-    last_calc_ver = 0xFFFFFFFF;
+    calc_force = true;
     last_prog_shown = -1;
     last_prog_layer = -1;
     last_prog_ver = 0xFFFFFFFF;
+}
+
+/* ---------- calculator ---------- */
+
+/* index 0: Montserrat 20 (1 line), 1: Montserrat 14 (2 lines), 2: Montserrat 10 (3 lines) */
+static const lv_font_t *font_by_idx(int i) {
+    if (i == 0) {
+        return &lv_font_montserrat_20;
+    }
+    if (i == 1) {
+        return &lv_font_montserrat_14;
+    }
+    return &lv_font_montserrat_10;
+}
+
+/* Wraps the expression for one font. Wrap points are CALC_MARK characters.
+ * Strict mode fails when the text does not fit; soft mode truncates instead. */
+static bool layout_try(const char *disp, int fi, bool soft, char *out, size_t outn, int *nl) {
+    const lv_font_t *f = font_by_idx(fi);
+    int maxl = fi + 1;
+    int lines = 1;
+    size_t o = 0;
+    int ll = 0;
+    int cl = 0;
+    const char *p = disp;
+
+    lay_line[0] = '\0';
+    out[0] = '\0';
+
+    for (;;) {
+        char ch = *p;
+        if (ch != '\0' && ch != CALC_MARK) {
+            if (cl < (int)sizeof(lay_chunk) - 1) {
+                lay_chunk[cl++] = ch;
+            } else if (!soft) {
+                return false;
+            }
+            p++;
+            continue;
+        }
+        lay_chunk[cl] = '\0';
+        if (cl > 0) {
+            snprintf(lay_test, sizeof(lay_test), "%s%s", lay_line, lay_chunk);
+            if (lv_txt_get_width(lay_test, strlen(lay_test), f, 0, 0) > EXPR_W) {
+                if (ll > 0) {
+                    if (lines >= maxl) {
+                        if (soft) {
+                            goto finish;
+                        }
+                        return false;
+                    }
+                    lines++;
+                    if (o + 1 < outn) {
+                        out[o++] = '\n';
+                    }
+                    lay_line[0] = '\0';
+                    ll = 0;
+                }
+                if (!soft && lv_txt_get_width(lay_chunk, cl, f, 0, 0) > EXPR_W) {
+                    return false;
+                }
+            }
+            if (o + (size_t)cl + 1 >= outn) {
+                if (soft) {
+                    goto finish;
+                }
+                return false;
+            }
+            memcpy(out + o, lay_chunk, cl);
+            o += cl;
+            if (ll + cl < (int)sizeof(lay_line)) {
+                memcpy(lay_line + ll, lay_chunk, cl);
+                ll += cl;
+                lay_line[ll] = '\0';
+            }
+        }
+        cl = 0;
+        if (ch == '\0') {
+            break;
+        }
+        p++;
+    }
+finish:
+    out[o] = '\0';
+    *nl = lines;
+    return true;
+}
+
+bool calc_layout_fits(const char *disp) {
+    bool ok = false;
+    int nl = 1;
+    k_mutex_lock(&lay_lock, K_FOREVER);
+    for (int fi = 0; fi < 3 && !ok; fi++) {
+        ok = layout_try(disp, fi, false, lay_out, sizeof(lay_out), &nl);
+    }
+    k_mutex_unlock(&lay_lock);
+    return ok;
+}
+
+bool calc_result_fits(const char *res) {
+    return lv_txt_get_width(res, strlen(res), &lv_font_montserrat_10, 0, 0) <= RES_W;
+}
+
+static void calc_view_apply(const struct calc_view *v) {
+    int fi;
+    int nl = 1;
+    bool ok = false;
+
+    k_mutex_lock(&lay_lock, K_FOREVER);
+    for (fi = 0; fi < 3; fi++) {
+        if (layout_try(v->disp, fi, false, expr_text, sizeof(expr_text) - 2, &nl)) {
+            ok = true;
+            break;
+        }
+    }
+    if (!ok) {
+        fi = 2;
+        layout_try(v->disp, fi, true, expr_text, sizeof(expr_text) - 2, &nl);
+    }
+    k_mutex_unlock(&lay_lock);
+
+    if (v->cursor) {
+        size_t l = strlen(expr_text);
+        expr_text[l] = '_';
+        expr_text[l + 1] = '\0';
+    }
+    lv_obj_set_style_text_font(calc_expr, font_by_idx(fi), LV_PART_MAIN);
+    lv_label_set_text(calc_expr, expr_text);
+    lv_obj_set_pos(calc_expr, EXPR_X, nl >= 3 ? 0 : 6);
+
+    int rf = 0;
+    while (rf < 2 && lv_txt_get_width(v->res, strlen(v->res), font_by_idx(rf), 0, 0) > RES_W) {
+        rf++;
+    }
+    const lv_font_t *f = font_by_idx(rf);
+    lv_obj_set_style_text_font(calc_res, f, LV_PART_MAIN);
+    lv_label_set_text(calc_res, v->res);
+    lv_obj_set_pos(calc_res, 0, SCR_H - 6 - lv_font_get_line_height(f));
 }
 
 /* ---------- menu ---------- */
@@ -340,14 +495,15 @@ static void refresh_cb(lv_timer_t *timer) {
     bool usb = (zmk_endpoints_selected().transport == ZMK_TRANSPORT_USB);
     int layer = zmk_keymap_highest_layer_active();
     bool in_menu = (layer == MENU_LAYER);
+    bool on_calc = (layer == CALC_LAYER);
 
     if ((int)in_menu != last_in_menu) {
         last_in_menu = in_menu;
         set_hidden(mn_root, !in_menu);
         set_bar_hidden(in_menu);
         if (in_menu) {
-            set_hidden(calc_num, true);
-            set_hidden(calc_op, true);
+            set_hidden(calc_expr, true);
+            set_hidden(calc_res, true);
             set_hidden(info_t, true);
             set_hidden(info_a, true);
             set_hidden(info_b, true);
@@ -363,57 +519,63 @@ static void refresh_cb(lv_timer_t *timer) {
         return;
     }
 
-    if ((int)level != last_level) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%u", level);
-        lv_label_set_text(batt_pct, buf);
-    }
-    if ((int)level != last_level || (int)charging != last_charging) {
-        lv_label_set_text(batt_icon, charging ? LV_SYMBOL_CHARGE : battery_symbol(level));
-    }
-    last_level = level;
-    last_charging = charging;
-
-    if ((int)usb != last_usb) {
-        lv_label_set_text(conn_icon, usb ? LV_SYMBOL_USB : LV_SYMBOL_BLUETOOTH);
-        last_usb = usb;
-    }
-
-    int hidden = 0;
-    if (!usb && !zmk_ble_active_profile_is_connected()) {
-        hidden = (tick / 5) % 2;
-    }
-    tick++;
-    if (hidden != last_hidden) {
-        set_hidden(conn_icon, hidden);
-        last_hidden = hidden;
-    }
-
-    if (layer != last_layer) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%d", layer);
-        lv_label_set_text(layer_num, buf);
-        last_layer = layer;
-    }
-
-    bool on_calc = (layer == CALC_LAYER);
     if ((int)on_calc != last_calc_shown) {
-        set_hidden(calc_num, !on_calc);
-        set_hidden(calc_op, !on_calc);
+        set_hidden(calc_expr, !on_calc);
+        set_hidden(calc_res, !on_calc);
+        set_bar_hidden(on_calc);
         last_calc_shown = on_calc;
-        last_calc_ver = 0xFFFFFFFF;
+        calc_force = true;
+        if (!on_calc) {
+            last_level = -1;
+            last_charging = -1;
+            last_usb = -1;
+            last_layer = -1;
+            last_hidden = -1;
+        }
     }
+
+    if (!on_calc) {
+        if ((int)level != last_level) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%u", level);
+            lv_label_set_text(batt_pct, buf);
+        }
+        if ((int)level != last_level || (int)charging != last_charging) {
+            lv_label_set_text(batt_icon, charging ? LV_SYMBOL_CHARGE : battery_symbol(level));
+        }
+        last_level = level;
+        last_charging = charging;
+
+        if ((int)usb != last_usb) {
+            lv_label_set_text(conn_icon, usb ? LV_SYMBOL_USB : LV_SYMBOL_BLUETOOTH);
+            last_usb = usb;
+        }
+
+        int hidden = 0;
+        if (!usb && !zmk_ble_active_profile_is_connected()) {
+            hidden = (tick / 5) % 2;
+        }
+        tick++;
+        if (hidden != last_hidden) {
+            set_hidden(conn_icon, hidden);
+            last_hidden = hidden;
+        }
+
+        if (layer != last_layer) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%d", layer);
+            lv_label_set_text(layer_num, buf);
+            last_layer = layer;
+        }
+    }
+
     if (on_calc) {
-        uint32_t ver = calc_version();
-        if (ver != last_calc_ver) {
-            char num[16];
-            char op[2] = {0, 0};
-            char opc = 0;
-            calc_get_display(num, sizeof(num), &opc);
-            op[0] = opc;
-            lv_label_set_text(calc_num, num);
-            lv_label_set_text(calc_op, op);
-            last_calc_ver = ver;
+        calc_get_view(&cv);
+        if (calc_force || strcmp(cv.disp, last_cv.disp) != 0 || strcmp(cv.res, last_cv.res) != 0 ||
+            cv.cursor != last_cv.cursor) {
+            calc_view_apply(&cv);
+            last_cv = cv;
+            calc_force = false;
         }
     }
 
@@ -448,18 +610,20 @@ lv_obj_t *zmk_display_status_screen() {
     conn_icon = make_label(screen, &lv_font_montserrat_14, 27);
     layer_num = make_label(screen, &lv_font_montserrat_20, 41);
 
-    calc_op = lv_label_create(screen);
-    lv_obj_set_width(calc_op, 20);
-    lv_obj_set_style_text_font(calc_op, &lv_font_montserrat_14, LV_PART_MAIN);
-    lv_label_set_text(calc_op, "");
-    lv_obj_align(calc_op, LV_ALIGN_TOP_LEFT, 2, 2);
+    calc_expr = lv_label_create(screen);
+    lv_obj_set_width(calc_expr, EXPR_W + 2);
+    lv_label_set_long_mode(calc_expr, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_font(calc_expr, &lv_font_montserrat_20, LV_PART_MAIN);
+    lv_label_set_text(calc_expr, "");
+    lv_obj_set_pos(calc_expr, EXPR_X, 6);
 
-    calc_num = lv_label_create(screen);
-    lv_obj_set_width(calc_num, 104);
-    lv_obj_set_style_text_font(calc_num, &lv_font_montserrat_20, LV_PART_MAIN);
-    lv_obj_set_style_text_align(calc_num, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
-    lv_label_set_text(calc_num, "");
-    lv_obj_align(calc_num, LV_ALIGN_TOP_LEFT, 0, 24);
+    calc_res = lv_label_create(screen);
+    lv_obj_set_width(calc_res, RES_W);
+    lv_label_set_long_mode(calc_res, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_align(calc_res, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(calc_res, &lv_font_montserrat_20, LV_PART_MAIN);
+    lv_label_set_text(calc_res, "");
+    lv_obj_set_pos(calc_res, 0, SCR_H - 6 - 20);
 
     info_t = make_info(screen, &lv_font_montserrat_10, 0);
     info_a = make_info(screen, &lv_font_montserrat_14, 13);

@@ -89,7 +89,7 @@
                 &kp KP_N7  &kp KP_N8        &kp KP_N9   &kp KP_DIVIDE
                 &kp KP_N4  &kp KP_N5        &kp KP_N6   &kp KP_MINUS
                 &kp KP_N1  &kp KP_N2        &kp KP_N3   &kp KP_PLUS
-                &kp KP_N0  &kp KP_MULTIPLY  &kp KP_DOT  &kp KP_ENTER
+                &kp KP_MULTIPLY  &kp KP_N0  &kp KP_DOT  &kp KP_ENTER
                 &kp N3
             >;
 
@@ -101,7 +101,7 @@
                 &calc 7  &calc 8         &calc 9         &calc CALC_DIV
                 &calc 4  &calc 5         &calc 6         &calc CALC_SUB
                 &calc 1  &calc 2         &calc 3         &calc CALC_ADD
-                &calc 0  &calc CALC_MUL  &calc CALC_DOT  &calc CALC_EQ
+                &calc CALC_MUL  &calc 0  &calc CALC_DOT  &calc CALC_EQ
                 &ht_calc CALC_CLR CALC_MENU
             >;
 

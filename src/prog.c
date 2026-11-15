@@ -26,6 +26,10 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define GAP_MS 30
 #define MSG_MS 800
 
+/* consumer codes of volume up / volume down (usage page 0x0C) */
+#define VOL_UP_CODE 0x0C00E9u
+#define VOL_DN_CODE 0x0C00EAu
+
 #define GRID_CELLS 12
 #define CELL_MOD 7
 #define CELL_DELAY 8
@@ -117,9 +121,13 @@ static struct {
     uint8_t len;
     uint8_t pos;
     uint8_t phase; /* 0 = start next element, 1 = release the held key */
+    uint8_t rep;   /* presses of the current element that are still to come */
     uint32_t held;
     uint32_t items[PROG_SEQ_MAX];
 } pb;
+
+/* volume commands alternate 2 and 3 presses (about 5 percent on average) */
+static bool vol_three;
 
 static struct k_work_delayable play_work;
 
@@ -130,6 +138,12 @@ struct save_req {
     bool dc;
     uint32_t dcv;
 };
+
+static uint8_t vol_presses(void) {
+    uint8_t n = vol_three ? 3 : 2;
+    vol_three = !vol_three;
+    return n;
+}
 
 /* ---------- key groups ---------- */
 
@@ -551,12 +565,18 @@ static void play_step(struct k_work *work) {
         code = pb.held;
         pb.held = 0;
         pb.phase = 0;
-        pb.pos++;
-        if (pb.pos >= pb.len) {
-            pb.active = false;
-        } else {
+        if (pb.rep > 0) {
+            /* the same element is pressed again (volume steps) */
             reschedule = true;
             wait_ms = GAP_MS;
+        } else {
+            pb.pos++;
+            if (pb.pos >= pb.len) {
+                pb.active = false;
+            } else {
+                reschedule = true;
+                wait_ms = GAP_MS;
+            }
         }
     } else {
         uint32_t e = pb.items[pb.pos];
@@ -569,6 +589,10 @@ static void play_step(struct k_work *work) {
                 wait_ms = PROG_DELAY_MS(e);
             }
         } else {
+            if (pb.rep == 0) {
+                pb.rep = (e == VOL_UP_CODE || e == VOL_DN_CODE) ? vol_presses() : 1;
+            }
+            pb.rep--;
             do_press = true;
             code = e;
             pb.held = e;
@@ -618,6 +642,7 @@ void prog_play(uint32_t idx) {
     pb.len = len;
     pb.pos = 0;
     pb.phase = 0;
+    pb.rep = 0;
     pb.held = 0;
     memcpy(pb.items, items, (size_t)len * sizeof(uint32_t));
     k_mutex_unlock(&play_lock);

@@ -11,6 +11,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/ble.h>
 #include <zmk/endpoints.h>
 #include <zmk/keymap.h>
+#include <zmk/activity.h>
 #include "calc.h"
 #include "prog.h"
 
@@ -18,6 +19,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define CALC_LAYER 1
 #define PROG_LAYER 2
 #define MENU_LAYER 3
+/* reduced mode after a long inactivity: only the battery icon is shown */
+#define MODE_IDLE 4
 
 /* The OLED is inverted in the overlay, so LVGL white is a dark pixel and
  * LVGL black is a lit pixel. Menu colours are written in LVGL terms. */
@@ -39,11 +42,12 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define PG_CW 32
 #define PG_CH 16
 
-/* right bar: connection icon, percent, vertical battery */
+/* right bar: connection icon, percent, vertical battery with 10 segments */
 #define BT_X (SCR_W - BAR_W)
-#define BT_Y 29
+#define BT_Y 28
 #define BT_W 20
-#define BT_H 35
+#define BT_H 36
+#define BT_SEGS 10
 
 /* calculator layout */
 #define EXPR_X 2
@@ -60,7 +64,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 static lv_obj_t *batt_pct;
 static lv_obj_t *conn_icon;
 static lv_obj_t *bt_box;
-static lv_obj_t *bt_seg[4]; /* 0 = bottom segment */
+static lv_obj_t *bt_seg[BT_SEGS]; /* 0 = bottom segment */
 static lv_obj_t *bt_chg;
 static lv_obj_t *kb_icon;
 static lv_obj_t *calc_expr;
@@ -178,10 +182,11 @@ static void build_battery(lv_obj_t *screen) {
     lv_obj_set_pos(bt_box, BT_X, BT_Y);
     lv_obj_set_size(bt_box, BT_W, BT_H);
 
-    make_rect(bt_box, 7, 0, 6, 3, true);   /* contact */
-    make_rect(bt_box, 3, 3, 14, 32, false); /* body */
-    for (int i = 0; i < 4; i++) {
-        bt_seg[i] = make_rect(bt_box, 5, 5 + 7 * (3 - i), 10, 6, true);
+    make_rect(bt_box, 7, 0, 6, 3, true);    /* contact */
+    make_rect(bt_box, 3, 3, 14, 33, false); /* body, inner height 31 */
+    /* 10 segments, 2 px high with a 1 px gap */
+    for (int i = 0; i < BT_SEGS; i++) {
+        bt_seg[i] = make_rect(bt_box, 5, 5 + 3 * (BT_SEGS - 1 - i), 10, 2, true);
     }
 
     bt_chg = lv_label_create(bt_box);
@@ -190,13 +195,17 @@ static void build_battery(lv_obj_t *screen) {
     lv_obj_set_style_text_color(bt_chg, MN_FG, LV_PART_MAIN);
     lv_obj_set_style_text_align(bt_chg, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_label_set_text(bt_chg, LV_SYMBOL_CHARGE);
-    lv_obj_set_pos(bt_chg, 3, 3 + (32 - lv_font_get_line_height(&lv_font_montserrat_14)) / 2);
+    lv_obj_set_pos(bt_chg, 3, 3 + (33 - lv_font_get_line_height(&lv_font_montserrat_14)) / 2);
     lv_obj_add_flag(bt_chg, LV_OBJ_FLAG_HIDDEN);
 }
 
+/* 10 segments of 10 percent each: 91-100 ten, 81-90 nine, ... 1-10 one, 0 none */
 static void batt_draw(uint8_t level, bool charging) {
-    int segs = level > 85 ? 4 : level > 60 ? 3 : level > 35 ? 2 : level > 10 ? 1 : 0;
-    for (int i = 0; i < 4; i++) {
+    int segs = (level + 9) / 10;
+    if (segs > BT_SEGS) {
+        segs = BT_SEGS;
+    }
+    for (int i = 0; i < BT_SEGS; i++) {
         set_hidden(bt_seg[i], charging || i >= segs);
     }
     set_hidden(bt_chg, !charging);
@@ -639,11 +648,14 @@ static void menu_refresh(void) {
 
 /* ---------- status screen ---------- */
 
-/* Shows only what belongs to the layer: 0 bar + keyboard icon, 1 calculator,
- * 2 key grid, 3 menu. */
+/* Shows only what belongs to the mode: 0 bar + keyboard icon, 1 calculator,
+ * 2 key grid, 3 menu, MODE_IDLE only the battery icon. */
 static void apply_mode(int mode) {
     set_hidden(mn_root, mode != MENU_LAYER);
     set_bar_hidden(mode != 0);
+    if (mode == MODE_IDLE) {
+        set_hidden(bt_box, false);
+    }
     set_hidden(kb_icon, mode != 0);
 
     bool calc = (mode == CALC_LAYER);
@@ -663,18 +675,35 @@ static void apply_mode(int mode) {
 
 static void refresh_cb(lv_timer_t *timer) {
     int layer = zmk_keymap_highest_layer_active();
+    bool idle = (zmk_activity_get_state() != ZMK_ACTIVITY_ACTIVE);
+    int mode = idle ? MODE_IDLE : layer;
 
-    if (layer != last_mode) {
-        last_mode = layer;
-        apply_mode(layer);
+    if (mode != last_mode) {
+        last_mode = mode;
+        apply_mode(mode);
+        if (timer != NULL) {
+            /* poll less often while idle */
+            lv_timer_set_period(timer, idle ? 250 : 100);
+        }
     }
 
-    if (layer == MENU_LAYER) {
+    if (mode == MODE_IDLE) {
+        uint8_t level = zmk_battery_state_of_charge();
+        bool charging = zmk_usb_is_powered();
+        if ((int)level != last_level || (int)charging != last_charging) {
+            batt_draw(level, charging);
+            last_level = level;
+            last_charging = charging;
+        }
+        return;
+    }
+
+    if (mode == MENU_LAYER) {
         menu_refresh();
         return;
     }
 
-    if (layer == PROG_LAYER) {
+    if (mode == PROG_LAYER) {
         uint32_t pv = prog_version();
         if (pv != last_prog_ver) {
             pg_update();
@@ -683,7 +712,7 @@ static void refresh_cb(lv_timer_t *timer) {
         return;
     }
 
-    if (layer == CALC_LAYER) {
+    if (mode == CALC_LAYER) {
         calc_get_view(&cv);
         if (calc_force || strcmp(cv.disp, last_cv.disp) != 0 || strcmp(cv.res, last_cv.res) != 0 ||
             cv.cursor != last_cv.cursor || cv.menu_open != last_cv.menu_open ||

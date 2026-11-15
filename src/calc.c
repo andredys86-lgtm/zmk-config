@@ -58,8 +58,8 @@ static int menu_sel;
 static uint32_t menu_ts;
 
 /* Menu cells: sqrt, power, pi, percent, +/-, (, ), backspace, AC, exit (0 = exit). */
-static const uint8_t menu_code[CALC_MENU_CELLS] = {KEY_SQRT,  KEY_POW,   KEY_PI, KEY_PCT, KEY_SIGN,
-                                                   KEY_OPEN,  KEY_CLOSE, KEY_BS, KEY_CLR, 0};
+static const uint8_t menu_code[CALC_MENU_CELLS] = {KEY_BS,   KEY_OPEN, KEY_CLOSE, KEY_SQRT, KEY_POW,
+                                                   KEY_PI,   KEY_PCT,  KEY_SIGN,  KEY_CLR,  0};
 
 __weak bool calc_layout_fits(const char *disp) {
     (void)disp;

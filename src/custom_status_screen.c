@@ -64,8 +64,8 @@ static bool cell_sel[PROG_MENU_MAX_CELLS];
 static bool cell_hl[PROG_MENU_MAX_CELLS];
 
 /* calculator menu objects */
-static const char *const cm_label[CALC_MENU_CELLS] = {"SQ", "X^Y", "PI", "%", "+/-",
-                                                      "(",  ")",   "DEL", "AC", "EXIT"};
+static const char *const cm_label[CALC_MENU_CELLS] = {"DEL", "(",  ")",   "SQ", "X^Y",
+                                                      "PI",  "%",  "+/-", "AC", "EXIT"};
 static lv_obj_t *cm_cell[CALC_MENU_CELLS];
 static bool cm_sel[CALC_MENU_CELLS];
 

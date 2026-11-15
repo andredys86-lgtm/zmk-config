@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 #define PROG_KEYS 17
@@ -34,7 +35,7 @@ struct prog_menu_view {
     uint8_t rows;
     uint8_t font; /* 10 or 14 */
     uint8_t cells;
-    uint8_t cursor;
+    uint8_t cursor; /* in PICK mode: index of the selected key 0..15 */
     uint8_t msg_kind;
     uint32_t version;
     uint32_t hl_mask; /* cells drawn with a thick border (active modifiers, delay choice) */
@@ -46,3 +47,6 @@ void prog_play(uint32_t idx);
 void prog_menu_event(uint32_t ev);
 void prog_get_menu_view(struct prog_menu_view *v);
 uint32_t prog_version(void);
+
+/* Text of the saved sequence of key idx (0..15); empty string when nothing is assigned. */
+void prog_key_text(uint32_t idx, char *out, size_t n);

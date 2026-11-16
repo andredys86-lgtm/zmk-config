@@ -20,7 +20,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define PROG_LAYER 2
 #define MENU_LAYER 3
 /* reduced mode after a long inactivity: only the battery icon is shown */
-#define MODE_IDLE 4
+#define MODE_IDLE 9
+/* Bluetooth profiles layer */
+#define BT_LAYER 4
 
 /* The OLED is inverted in the overlay, so LVGL white is a dark pixel and
  * LVGL black is a lit pixel. Menu colours are written in LVGL terms. */
@@ -73,6 +75,17 @@ static uint32_t tick;
 
 /* layer 2 grid */
 static lv_obj_t *pg_cell[16];
+
+/* layer 4: Bluetooth profiles */
+#define BT_PROFS 5
+static lv_obj_t *bp_cell[BT_PROFS];
+static lv_obj_t *bp_clr;
+static lv_obj_t *bp_i1;
+static lv_obj_t *bp_i2;
+static lv_obj_t *bp_i3;
+static bool bp_sel[BT_PROFS];
+static bool bp_hl[BT_PROFS];
+static uint32_t bp_sig = 0xFFFFFFFF;
 
 /* menu objects */
 static lv_obj_t *mn_root;
@@ -151,6 +164,7 @@ static void invalidate_status_cache(void) {
     last_usb = -1;
     last_hidden = -1;
     calc_force = true;
+    bp_sig = 0xFFFFFFFF;
     last_prog_ver = 0xFFFFFFFF;
 }
 
@@ -513,6 +527,121 @@ static void pg_update(void) {
     }
 }
 
+/* Layer 4: Bluetooth profiles. The cells repeat the physical keys: P1-P4 in the top
+ * row, P5 under P1, CLR in the bottom-left corner (created after init_styles). */
+static lv_obj_t *bp_make(lv_obj_t *screen, int col, int row, const char *txt) {
+    const lv_font_t *f = &lv_font_montserrat_10;
+    int padt = (PG_CH - lv_font_get_line_height(f)) / 2 - 1;
+    if (padt < 0) {
+        padt = 0;
+    }
+    lv_obj_t *c = lv_label_create(screen);
+    lv_obj_remove_style_all(c);
+    lv_obj_add_style(c, &st_cell, LV_PART_MAIN);
+    lv_obj_set_style_text_font(c, f, LV_PART_MAIN);
+    lv_obj_set_style_pad_top(c, padt, LV_PART_MAIN);
+    lv_label_set_long_mode(c, LV_LABEL_LONG_CLIP);
+    lv_label_set_text(c, txt);
+    lv_obj_set_pos(c, col * PG_CW, row * PG_CH);
+    lv_obj_set_size(c, PG_CW + (col < 3 ? 1 : 0), PG_CH + (row < 3 ? 1 : 0));
+    lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
+    return c;
+}
+
+static lv_obj_t *bp_text(lv_obj_t *screen, const lv_font_t *f, int x, int y, int w, int al) {
+    lv_obj_t *l = lv_label_create(screen);
+    lv_obj_set_width(l, w);
+    lv_obj_set_style_text_font(l, f, LV_PART_MAIN);
+    lv_obj_set_style_text_align(l, al, LV_PART_MAIN);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
+    lv_label_set_text(l, "");
+    lv_obj_set_pos(l, x, y);
+    lv_obj_add_flag(l, LV_OBJ_FLAG_HIDDEN);
+    return l;
+}
+
+static void build_bt_screen(lv_obj_t *screen) {
+    static const char *const nm[BT_PROFS] = {"P1", "P2", "P3", "P4", "P5"};
+    static const int cc[BT_PROFS] = {0, 1, 2, 3, 0};
+    static const int rr[BT_PROFS] = {0, 0, 0, 0, 1};
+
+    for (int i = 0; i < BT_PROFS; i++) {
+        bp_cell[i] = bp_make(screen, cc[i], rr[i], nm[i]);
+        bp_sel[i] = false;
+        bp_hl[i] = false;
+    }
+    bp_clr = bp_make(screen, 0, 3, "CLR");
+    bp_i1 = bp_text(screen, &lv_font_montserrat_10, 36, 19, 90, LV_TEXT_ALIGN_LEFT);
+    bp_i2 = bp_text(screen, &lv_font_montserrat_14, 0, 34, SCR_W, LV_TEXT_ALIGN_CENTER);
+    bp_i3 = bp_text(screen, &lv_font_montserrat_10, 36, 53, 90, LV_TEXT_ALIGN_LEFT);
+    lv_label_set_text(bp_i3, "unpair active");
+}
+
+static void bp_show(bool show) {
+    for (int i = 0; i < BT_PROFS; i++) {
+        set_hidden(bp_cell[i], !show);
+    }
+    set_hidden(bp_clr, !show);
+    set_hidden(bp_i1, !show);
+    set_hidden(bp_i2, !show);
+    set_hidden(bp_i3, !show);
+}
+
+static void bp_update(void) {
+    char t[16];
+    bool conn[BT_PROFS];
+    bool open[BT_PROFS];
+    int act = zmk_ble_active_profile_index();
+    uint32_t sig = (uint32_t)(act & 0xFF);
+
+    for (int i = 0; i < BT_PROFS; i++) {
+        if (i < (int)ZMK_BLE_PROFILE_COUNT) {
+            conn[i] = zmk_ble_profile_is_connected(i);
+            open[i] = zmk_ble_profile_is_open(i);
+        } else {
+            conn[i] = false;
+            open[i] = true;
+        }
+        sig |= (conn[i] ? 1u : 0u) << (8 + i);
+        sig |= (open[i] ? 1u : 0u) << (16 + i);
+    }
+    if (sig == bp_sig) {
+        return;
+    }
+    bp_sig = sig;
+
+    for (int i = 0; i < BT_PROFS; i++) {
+        snprintf(t, sizeof(t), "P%d%s", i + 1, open[i] ? "" : "*");
+        lv_label_set_text(bp_cell[i], t);
+        bool sel = (i == act);
+        if (sel != bp_sel[i]) {
+            if (sel) {
+                lv_obj_add_style(bp_cell[i], &st_cell_sel, LV_PART_MAIN);
+            } else {
+                lv_obj_remove_style(bp_cell[i], &st_cell_sel, LV_PART_MAIN);
+            }
+            bp_sel[i] = sel;
+        }
+        bool hl = conn[i];
+        if (hl != bp_hl[i]) {
+            if (hl) {
+                lv_obj_add_style(bp_cell[i], &st_cell_hl, LV_PART_MAIN);
+            } else {
+                lv_obj_remove_style(bp_cell[i], &st_cell_hl, LV_PART_MAIN);
+            }
+            bp_hl[i] = hl;
+        }
+    }
+
+    snprintf(t, sizeof(t), "active: P%d", act + 1);
+    lv_label_set_text(bp_i1, t);
+    if (act >= 0 && act < BT_PROFS) {
+        lv_label_set_text(bp_i2, conn[act] ? "connected" : (open[act] ? "ready to pair" : "not connected"));
+    } else {
+        lv_label_set_text(bp_i2, "");
+    }
+}
+
 /* Shows the tail of the sequence that fits the row, with ".." when the
  * beginning is hidden. */
 static void seq_tail(const char *full, char *out, size_t n) {
@@ -669,6 +798,8 @@ static void apply_mode(int mode) {
         set_hidden(pg_cell[i], mode != PROG_LAYER);
     }
 
+    bp_show(mode == BT_LAYER);
+
     invalidate_status_cache();
     menu_force = true;
 }
@@ -700,6 +831,11 @@ static void refresh_cb(lv_timer_t *timer) {
 
     if (mode == MENU_LAYER) {
         menu_refresh();
+        return;
+    }
+
+    if (mode == BT_LAYER) {
+        bp_update();
         return;
     }
 
@@ -791,6 +927,7 @@ lv_obj_t *zmk_display_status_screen() {
     build_menu(screen);
     build_calc_menu(screen);
     build_prog_grid(screen);
+    build_bt_screen(screen);
 
     refresh_cb(NULL);
     lv_timer_create(refresh_cb, 100, NULL);

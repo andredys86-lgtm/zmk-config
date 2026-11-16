@@ -548,6 +548,47 @@ SETTINGS_STATIC_HANDLER_DEFINE(np16, "np16", NULL, np16_set, NULL, NULL);
 
 /* ---------- playback ---------- */
 
+/* Elements with two or more modifiers (for example Ctrl+Alt+Delete) are sent the way a
+ * person types them: the modifiers go down one by one, then the key. Windows may ignore
+ * Ctrl+Alt+Delete when everything arrives in one report. */
+#define MOD_GAP_MS 25
+#define MOD_USAGE_BASE 0x0700E0u
+
+static void send_code(uint32_t code, bool pressed) {
+    uint32_t mods = (code >> 24) & 0xFFu;
+    uint32_t base = code & 0x00FFFFFFu;
+    int n = 0;
+
+    for (int b = 0; b < 8; b++) {
+        if (mods & (1u << b)) {
+            n++;
+        }
+    }
+    if (n < 2) {
+        raise_zmk_keycode_state_changed_from_encoded(code, pressed, k_uptime_get());
+        return;
+    }
+    if (pressed) {
+        for (int b = 0; b < 8; b++) {
+            if (mods & (1u << b)) {
+                raise_zmk_keycode_state_changed_from_encoded(MOD_USAGE_BASE + (uint32_t)b, true,
+                                                             k_uptime_get());
+                k_msleep(MOD_GAP_MS);
+            }
+        }
+        raise_zmk_keycode_state_changed_from_encoded(base, true, k_uptime_get());
+    } else {
+        raise_zmk_keycode_state_changed_from_encoded(base, false, k_uptime_get());
+        for (int b = 7; b >= 0; b--) {
+            if (mods & (1u << b)) {
+                k_msleep(MOD_GAP_MS);
+                raise_zmk_keycode_state_changed_from_encoded(MOD_USAGE_BASE + (uint32_t)b, false,
+                                                             k_uptime_get());
+            }
+        }
+    }
+}
+
 static void play_step(struct k_work *work) {
     bool do_press = false;
     bool do_release = false;
@@ -604,10 +645,10 @@ static void play_step(struct k_work *work) {
     k_mutex_unlock(&play_lock);
 
     if (do_press) {
-        raise_zmk_keycode_state_changed_from_encoded(code, true, k_uptime_get());
+        send_code(code, true);
     }
     if (do_release) {
-        raise_zmk_keycode_state_changed_from_encoded(code, false, k_uptime_get());
+        send_code(code, false);
     }
     if (reschedule) {
         k_work_schedule(&play_work, K_MSEC(wait_ms));

@@ -9,6 +9,7 @@
 
 #include <zmk/event_manager.h>
 #include <zmk/events/layer_state_changed.h>
+#include <zmk/keymap.h>
 #include <zmk/events/keycode_state_changed.h>
 
 #include "prog.h"
@@ -21,6 +22,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define EV_CONFIRM 16
 #define EV_NEXT 17
 #define EV_PREV 18
+#define EV_EXIT 19
 
 #define HOLD_MS 30
 #define GAP_MS 30
@@ -83,6 +85,8 @@ static uint8_t seq_len[PROG_KEYS];
 /* Menu state */
 static uint8_t menu_state;
 static int pick_cur;
+static int menu_base;      /* first key slot of the programmable layer the menu was opened from */
+static int exit_layer = 2; /* layer the menu returns to */
 static int edit_target = -1;
 static uint32_t edit_items[PROG_SEQ_MAX];
 static uint8_t edit_len;
@@ -439,7 +443,7 @@ void prog_key_text(uint32_t idx, char *out, size_t n) {
         return;
     }
     out[0] = '\0';
-    if (idx >= MATRIX_KEYS) {
+    if (idx >= PROG_KEYS || (idx % PROG_PAGE) >= MATRIX_KEYS) {
         return;
     }
 
@@ -706,6 +710,10 @@ SYS_INIT(prog_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 
 static int prog_layer_listener(const zmk_event_t *eh) {
     const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
+    if (ev != NULL && ev->state && prog_layer_index(ev->layer) >= 0) {
+        menu_base = prog_layer_index(ev->layer) * PROG_PAGE;
+        exit_layer = ev->layer;
+    }
     if (ev != NULL && ev->state && ev->layer == MENU_LAYER) {
         k_mutex_lock(&prog_lock, K_FOREVER);
         menu_state = ST_PICK;
@@ -729,6 +737,7 @@ ZMK_SUBSCRIPTION(prog_layer, zmk_layer_state_changed);
 /* ---------- menu events ---------- */
 
 static void open_key(int k) {
+    k += menu_base;
     edit_target = k;
     reset_edit();
     edit_len = seq_len[k];
@@ -945,6 +954,11 @@ static void delay_event(uint32_t ev, struct save_req *sr) {
 }
 
 void prog_menu_event(uint32_t ev) {
+    if (ev == EV_EXIT) {
+        /* back to the programmable layer the menu was opened from */
+        zmk_keymap_layer_to(exit_layer);
+        return;
+    }
     struct save_req sr;
     sr.idx = -1;
     sr.len = 0;
@@ -982,6 +996,7 @@ void prog_get_menu_view(struct prog_menu_view *v) {
     memset(v, 0, sizeof(*v));
     v->mode = menu_state;
     v->version = version;
+    v->base = (uint8_t)menu_base;
     v->msg_kind = (msg_kind != PROG_MSG_NONE && k_uptime_get() < msg_until) ? msg_kind
                                                                           : PROG_MSG_NONE;
     v->cols = 3;

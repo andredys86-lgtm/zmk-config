@@ -46,7 +46,7 @@
             #binding-cells = <2>;
             flavor = "tap-preferred";
             tapping-term-ms = <600>;
-            bindings = <&to>, <&menu>;
+            bindings = <&menu>, <&menu>;
         };
 
         ht_calc: ht_calc {
@@ -77,6 +77,20 @@
             compatible = "zmk,behavior-sensor-rotate";
             #sensor-binding-cells = <0>;
             bindings = <&none>, <&none>;
+        };
+
+        ht_pg: ht_pg {
+            compatible = "zmk,behavior-hold-tap";
+            #binding-cells = <2>;
+            flavor = "tap-preferred";
+            tapping-term-ms = <600>;
+            bindings = <&to>, <&to>;
+        };
+
+        enc_pg: enc_pg {
+            compatible = "zmk,behavior-sensor-rotate";
+            #sensor-binding-cells = <0>;
+            bindings = <&none>, <&to 1>;
         };
 
         enc_l0: enc_l0 {
@@ -137,7 +151,7 @@
                 &dyn 4   &dyn 5   &dyn 6   &dyn 7
                 &dyn 8   &dyn 9   &dyn 10  &dyn 11
                 &dyn 12  &dyn 13  &dyn 14  &dyn 15
-                &ht_menu 3 16
+                &ht_pg 3 5
             >;
 
             sensor-bindings = <&enc_l2>;
@@ -149,7 +163,7 @@
                 &menu 4   &menu 5   &menu 6   &menu 7
                 &menu 8   &menu 9   &menu 10  &menu 11
                 &menu 12  &menu 13  &menu 14  &menu 15
-                &ht_exit 2 16
+                &ht_exit 19 16
             >;
 
             sensor-bindings = <&enc_menu>;
@@ -165,6 +179,30 @@
             >;
 
             sensor-bindings = <&enc_none>;
+        };
+
+        prog_layer2 {
+            bindings = <
+                &dyn 17  &dyn 18  &dyn 19  &dyn 20
+                &dyn 21  &dyn 22  &dyn 23  &dyn 24
+                &dyn 25  &dyn 26  &dyn 27  &dyn 28
+                &dyn 29  &dyn 30  &dyn 31  &dyn 32
+                &ht_pg 3 6
+            >;
+
+            sensor-bindings = <&enc_pg>;
+        };
+
+        prog_layer3 {
+            bindings = <
+                &dyn 34  &dyn 35  &dyn 36  &dyn 37
+                &dyn 38  &dyn 39  &dyn 40  &dyn 41
+                &dyn 42  &dyn 43  &dyn 44  &dyn 45
+                &dyn 46  &dyn 47  &dyn 48  &dyn 49
+                &ht_pg 3 2
+            >;
+
+            sensor-bindings = <&enc_pg>;
         };
     };
 };

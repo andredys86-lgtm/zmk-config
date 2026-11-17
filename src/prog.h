@@ -4,9 +4,17 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#define PROG_KEYS 17
+#define PROG_KEYS 51
+/* three programmable layers (keymap layers 2, 5 and 6), PROG_PAGE key slots each */
+#define PROG_PAGE 17
+#define PROG_LAYERS 3
 #define PROG_SEQ_MAX 16
 #define PROG_MENU_MAX_CELLS 24
+
+/* 0, 1, 2 for keymap layers 2, 5, 6; -1 for any other layer */
+static inline int prog_layer_index(int layer) {
+    return layer == 2 ? 0 : (layer == 5 ? 1 : (layer == 6 ? 2 : -1));
+}
 
 /* A sequence element is one 32-bit word:
  * key:   (usage_page << 16) | usage_id, modifiers in the top byte
@@ -37,6 +45,7 @@ struct prog_menu_view {
     uint8_t cells;
     uint8_t cursor; /* in PICK mode: index of the selected key 0..15 */
     uint8_t msg_kind;
+    uint8_t base; /* first key slot of the layer being edited */
     uint32_t version;
     uint32_t hl_mask; /* cells drawn with a thick border (active modifiers, delay choice) */
     char cell[PROG_MENU_MAX_CELLS][8];

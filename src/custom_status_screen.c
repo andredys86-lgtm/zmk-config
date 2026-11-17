@@ -87,6 +87,11 @@ static bool bp_sel[BT_PROFS];
 static bool bp_hl[BT_PROFS];
 static uint32_t bp_sig = 0xFFFFFFFF;
 
+/* programmable layers: key slot offset of the shown layer and the "PROG n" label */
+static lv_obj_t *pg_msg;
+static int64_t pg_msg_until;
+static int pg_base;
+
 /* menu objects */
 static lv_obj_t *mn_root;
 static lv_obj_t *mn_seq;
@@ -518,7 +523,7 @@ static void pg_update(void) {
     const lv_font_t *f = &lv_font_montserrat_10;
 
     for (int i = 0; i < 16; i++) {
-        prog_key_text(i, t, sizeof(t));
+        prog_key_text(pg_base + i, t, sizeof(t));
         lv_label_set_text(pg_cell[i], t);
         int w = lv_txt_get_width(t, strlen(t), f, 0, 0);
         lv_obj_set_style_text_align(pg_cell[i],
@@ -575,6 +580,16 @@ static void build_bt_screen(lv_obj_t *screen) {
     bp_i2 = bp_text(screen, &lv_font_montserrat_14, 0, 34, SCR_W, LV_TEXT_ALIGN_CENTER);
     bp_i3 = bp_text(screen, &lv_font_montserrat_10, 36, 53, 90, LV_TEXT_ALIGN_LEFT);
     lv_label_set_text(bp_i3, "unpair active");
+}
+
+/* "PROG n" label shown for a short time after entering a programmable layer. */
+static void build_pg_msg(lv_obj_t *screen) {
+    pg_msg = lv_label_create(screen);
+    lv_obj_remove_style_all(pg_msg);
+    lv_obj_add_style(pg_msg, &st_msg, LV_PART_MAIN);
+    lv_label_set_text(pg_msg, "");
+    lv_obj_align(pg_msg, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(pg_msg, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void bp_show(bool show) {
@@ -708,7 +723,7 @@ static void menu_apply(const struct prog_menu_view *v) {
                 continue;
             }
             int k = top + i;
-            prog_key_text(k, tmp, sizeof(tmp));
+            prog_key_text((uint32_t)v->base + k, tmp, sizeof(tmp));
             snprintf(rowtxt, sizeof(rowtxt), "%d  %s", k + 1, tmp[0] ? tmp : "-");
             lv_obj_set_pos(c, 0, i * PICK_RH);
             lv_obj_set_size(c, SCR_W, PICK_RH + 1);
@@ -795,10 +810,23 @@ static void apply_mode(int mode) {
     }
 
     for (int i = 0; i < 16; i++) {
-        set_hidden(pg_cell[i], mode != PROG_LAYER);
+        set_hidden(pg_cell[i], prog_layer_index(mode) < 0);
     }
 
     bp_show(mode == BT_LAYER);
+
+    int pgi = prog_layer_index(mode);
+    pg_base = (pgi >= 0) ? pgi * PROG_PAGE : 0;
+    if (pgi >= 0) {
+        char pt[12];
+        snprintf(pt, sizeof(pt), "PROG %d", pgi + 1);
+        lv_label_set_text(pg_msg, pt);
+        lv_obj_align(pg_msg, LV_ALIGN_CENTER, 0, 0);
+        set_hidden(pg_msg, false);
+        pg_msg_until = k_uptime_get() + 800;
+    } else {
+        set_hidden(pg_msg, true);
+    }
 
     invalidate_status_cache();
     menu_force = true;
@@ -839,7 +867,11 @@ static void refresh_cb(lv_timer_t *timer) {
         return;
     }
 
-    if (mode == PROG_LAYER) {
+    if (prog_layer_index(mode) >= 0) {
+        if (pg_msg_until != 0 && k_uptime_get() >= pg_msg_until) {
+            set_hidden(pg_msg, true);
+            pg_msg_until = 0;
+        }
         uint32_t pv = prog_version();
         if (pv != last_prog_ver) {
             pg_update();
@@ -928,6 +960,7 @@ lv_obj_t *zmk_display_status_screen() {
     build_calc_menu(screen);
     build_prog_grid(screen);
     build_bt_screen(screen);
+    build_pg_msg(screen);
 
     refresh_cb(NULL);
     lv_timer_create(refresh_cb, 100, NULL);
